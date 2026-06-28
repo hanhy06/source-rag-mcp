@@ -1,0 +1,8 @@
+source-rag-mcp
+Copyright 2026 source-rag-mcp contributors
+
+This product does not include or redistribute Minecraft source code, Minecraft bytecode,
+Minecraft assets, or other Mojang/Microsoft copyrighted game content.
+
+Minecraft jars and decompiled sources are downloaded or generated only on the user's
+local machine when the user invokes the relevant MCP tools.

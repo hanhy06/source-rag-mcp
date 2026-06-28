@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.source-rag/
+.decompile-test/
+.source-rag-*/
+sources/
+*.jar
+*.class
+*.log

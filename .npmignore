@@ -1,0 +1,11 @@
+node_modules/
+.source-rag/
+.source-rag-*/
+.decompile-test/
+sources/
+*.jar
+*.class
+*.log
+.env
+.env.*
+tsconfig.tsbuildinfo
