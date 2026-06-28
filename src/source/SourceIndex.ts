@@ -88,7 +88,8 @@ export class SourceIndex {
         const exact = symbol.name.toLowerCase() === normalized ? 50 : 0;
         const prefix = symbol.name.toLowerCase().startsWith(normalized) ? 20 : 0;
         const kind = symbol.kind === "class" ? 15 : symbol.kind === "method" ? 5 : 0;
-        hits.push({ ...symbol, score: caseExact + exact + prefix + kind + normalized.length });
+        const topLevel = path.basename(symbol.path, JAVA_FILE).toLowerCase() === normalized ? 30 : 0;
+        hits.push({ ...symbol, score: caseExact + exact + prefix + kind + topLevel + normalized.length });
       }
     }
 
