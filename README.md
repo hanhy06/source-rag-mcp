@@ -90,8 +90,29 @@ If you have a jar, `.class` file, or class directory, use `decompile_classes` fi
 * `search_text`: search raw source lines
 * `rag_search`: search source chunks with lightweight lexical scoring
 * `get_source`: read a source file by path or class name
-* `get_method_source`: read a method body from a class
+* `get_method_source`: read a method body from a class, including inner class owners and overloaded methods
 * `find_references`: find exact word references
+
+`get_method_source` accepts these optional overload filters:
+
+```json
+{
+  "version": "26.2",
+  "owner": "net.minecraft.world.item.ItemStack",
+  "method": "ItemStack",
+  "parameterTypes": ["Holder<Item>", "int"]
+}
+```
+
+Inner classes can be addressed with either `.` or `$`:
+
+```json
+{
+  "version": "26.2",
+  "owner": "com.mojang.blaze3d.vertex.TlsfAllocator.Block",
+  "method": "isFree"
+}
+```
 
 ## Codex MCP Config
 

@@ -44,6 +44,13 @@ export type SearchHit = {
   preview: string;
 };
 
+export type MethodLookup = {
+  signature?: string;
+  parameterTypes?: string[];
+  parameterCount?: number;
+  overloadIndex?: number;
+};
+
 export type VersionIndex = {
   meta: SourceVersion;
   files: SourceFile[];

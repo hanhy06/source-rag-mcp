@@ -118,14 +118,23 @@ export function createServer(): McpServer {
   });
 
   server.registerTool("get_method_source", {
-    description: "Read a method body from a class.",
+    description: "Read a method body from a class. Supports inner class owners and overloaded methods.",
     inputSchema: {
       version: z.string(),
       owner: z.string().describe("Relative path, simple class name, or fully qualified class name."),
-      method: z.string()
+      method: z.string(),
+      signature: z.string().optional().describe("Optional substring that must appear in the method signature."),
+      parameterTypes: z.array(z.string()).optional().describe("Optional ordered parameter type filter for overloaded methods."),
+      parameterCount: z.number().int().min(0).optional().describe("Optional parameter count filter for overloaded methods."),
+      overloadIndex: z.number().int().min(0).optional().describe("Zero-based match index after other overload filters.")
     }
-  }, async ({ version, owner, method }) => {
-    const hit = await index.getMethodSource(version, owner, method);
+  }, async ({ version, owner, method, signature, parameterTypes, parameterCount, overloadIndex }) => {
+    const hit = await index.getMethodSource(version, owner, method, {
+      signature,
+      parameterTypes,
+      parameterCount,
+      overloadIndex
+    });
     return text(hit.preview);
   });
 

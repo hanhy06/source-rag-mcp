@@ -1,13 +1,14 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { SearchHit, SourceChunk, SourceFile, SourceSymbol, SourceVersion, VersionIndex } from "./types.js";
+import type { MethodLookup, SearchHit, SourceChunk, SourceFile, SourceSymbol, SourceVersion, VersionIndex } from "./types.js";
 
 const DEFAULT_DATA_DIR = ".source-rag";
 const JAVA_FILE = ".java";
 const WORD_PATTERN = /[A-Za-z_][A-Za-z0-9_]*/g;
 const CLASS_PATTERN = /^\s*(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/;
 const METHOD_PATTERN = /^\s*(?:public|protected|private|static|final|abstract|synchronized|native|strictfp|default|\s)+[\w<>\[\].?,\s]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*(?:throws\s+[^{]+)?\{/;
+const METHOD_LOOKUP_PATTERN = /^\s*(?:public|protected|private|static|final|abstract|synchronized|native|strictfp|default|\s)+[\w<>\[\].?,\s]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^;]*)\)\s*(?:throws\s+[^{]+)?\{/;
 const FIELD_PATTERN = /^\s*(?:public|protected|private|static|final|volatile|transient|\s)+[\w<>\[\].?,\s]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;)/;
 
 export class SourceIndex {
@@ -150,36 +151,35 @@ export class SourceIndex {
 
   public async getSource(version: string, fileOrClass: string): Promise<SourceFile> {
     const index = await this.loadIndex(version);
-    const normalized = fileOrClass.replaceAll("\\", "/");
-
-    const file = index.files.find(candidate =>
-      candidate.path === normalized ||
-      candidate.fullName === fileOrClass ||
-      candidate.className === fileOrClass
-    );
-
-    if (!file) throw new Error(`Source not found: ${fileOrClass}`);
-    return file;
+    return this.getSourceFromIndex(index, fileOrClass);
   }
 
-  public async getMethodSource(version: string, owner: string, method: string): Promise<SearchHit> {
-    const file = await this.getSource(version, owner);
+  public async getMethodSource(version: string, owner: string, method: string, lookup: MethodLookup = {}): Promise<SearchHit> {
+    const index = await this.loadIndex(version);
+    const file = this.getSourceFromIndex(index, owner);
     const lines = file.text.split(/\r?\n/);
+    const range = this.findOwnerRange(file, owner, lines);
+    const matches: SearchHit[] = [];
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = range.start; i <= range.end; i++) {
       const line = lines[i];
-      const match = line.match(METHOD_PATTERN);
+      const match = line.match(METHOD_LOOKUP_PATTERN);
       if (!match || match[1] !== method) continue;
+      if (!this.matchesMethodLookup(line, match[2], lookup)) continue;
 
       const end = this.findBlockEnd(lines, i);
-      return {
+      matches.push({
         version,
         path: file.path,
         line: i + 1,
-        owner: file.fullName,
+        owner: range.owner,
         preview: lines.slice(i, end + 1).join("\n")
-      };
+      });
     }
+
+    const overloadIndex = lookup.overloadIndex ?? 0;
+    const hit = matches[overloadIndex];
+    if (hit) return hit;
 
     throw new Error(`Method not found: ${owner}#${method}`);
   }
@@ -208,6 +208,20 @@ export class SourceIndex {
     }
 
     return hits.slice(0, limit);
+  }
+
+  private getSourceFromIndex(index: VersionIndex, fileOrClass: string): SourceFile {
+    const normalized = fileOrClass.replaceAll("\\", "/");
+
+    const file = index.files.find(candidate =>
+      candidate.path === normalized ||
+      candidate.fullName === fileOrClass ||
+      candidate.className === fileOrClass ||
+      this.ownerMatchesFile(candidate, fileOrClass)
+    );
+
+    if (!file) throw new Error(`Source not found: ${fileOrClass}`);
+    return file;
   }
 
   private async collectJavaFiles(root: string): Promise<string[]> {
@@ -346,6 +360,93 @@ export class SourceIndex {
 
   private preview(text: string): string {
     return text.replace(/\s+/g, " ").trim().slice(0, 500);
+  }
+
+  private ownerMatchesFile(file: SourceFile, owner: string): boolean {
+    if (!file.fullName || !file.className) return false;
+
+    const normalizedOwner = owner.replaceAll("$", ".");
+    if (normalizedOwner === file.fullName) return true;
+    if (normalizedOwner === file.className) return true;
+
+    return normalizedOwner.startsWith(`${file.fullName}.`) ||
+      normalizedOwner.startsWith(`${file.className}.`);
+  }
+
+  private findOwnerRange(file: SourceFile, owner: string, lines: string[]): { start: number; end: number; owner: string | null } {
+    const normalizedOwner = owner.replaceAll("$", ".");
+    if (!file.fullName || normalizedOwner === file.fullName || normalizedOwner === file.className) {
+      return {
+        start: 0,
+        end: lines.length - 1,
+        owner: file.fullName
+      };
+    }
+
+    const simpleOwner = normalizedOwner.split(".").at(-1) ?? normalizedOwner;
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(CLASS_PATTERN);
+      if (!match || match[1] !== simpleOwner) continue;
+
+      return {
+        start: i,
+        end: this.findBlockEnd(lines, i),
+        owner: `${file.fullName}.${simpleOwner}`
+      };
+    }
+
+    return {
+      start: 0,
+      end: lines.length - 1,
+      owner: file.fullName
+    };
+  }
+
+  private matchesMethodLookup(signature: string, rawParameters: string, lookup: MethodLookup): boolean {
+    if (lookup.signature && !signature.includes(lookup.signature)) return false;
+
+    const parameters = this.parseParameterTypes(rawParameters);
+    if (lookup.parameterCount !== undefined && parameters.length !== lookup.parameterCount) return false;
+
+    if (lookup.parameterTypes) {
+      if (parameters.length !== lookup.parameterTypes.length) return false;
+
+      for (let i = 0; i < parameters.length; i++) {
+        if (!this.parameterTypeMatches(parameters[i], lookup.parameterTypes[i])) return false;
+      }
+    }
+
+    return true;
+  }
+
+  private parseParameterTypes(rawParameters: string): string[] {
+    const trimmed = rawParameters.trim();
+    if (!trimmed) return [];
+
+    return trimmed.split(",")
+      .map(parameter => parameter.trim())
+      .map(parameter => parameter.replace(/\bfinal\s+/g, ""))
+      .map(parameter => parameter.replace(/\s+/g, " "))
+      .map(parameter => {
+        const parts = parameter.split(" ");
+        if (parts.length <= 1) return parameter;
+        return parts.slice(0, -1).join(" ");
+      });
+  }
+
+  private parameterTypeMatches(actual: string, expected: string): boolean {
+    const normalizedActual = this.normalizeType(actual);
+    const normalizedExpected = this.normalizeType(expected);
+
+    return normalizedActual === normalizedExpected ||
+      normalizedActual.endsWith(`.${normalizedExpected}`) ||
+      normalizedExpected.endsWith(`.${normalizedActual}`);
+  }
+
+  private normalizeType(type: string): string {
+    return type.replace(/\s+/g, "")
+      .replaceAll("$", ".")
+      .toLowerCase();
   }
 
   private findBlockEnd(lines: string[], start: number): number {
