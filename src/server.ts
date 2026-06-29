@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { Decompiler } from "./source/Decompiler.js";
+import { ModJarIndexer } from "./source/ModJarIndexer.js";
 import { SourceIndex } from "./source/SourceIndex.js";
 import { VersionDownloader } from "./source/VersionDownloader.js";
 
@@ -12,6 +13,7 @@ export function createServer(): McpServer {
   const index = new SourceIndex();
   const decompiler = new Decompiler();
   const downloader = new VersionDownloader();
+  const modJarIndexer = new ModJarIndexer();
   const server = new McpServer({
     name: "source-rag-mcp",
     version: "0.1.0"
@@ -68,6 +70,25 @@ export function createServer(): McpServer {
     const meta = await index.indexSources(label, sourceDir);
 
     return text(JSON.stringify({ download, decompile, index: meta }, null, 2));
+  });
+
+  server.registerTool("add_mod_jar", {
+    description: "Decompile and index a local mod jar. This tool does not download mod jars.",
+    inputSchema: {
+      jarPath: z.string().describe("Local path to a mod jar."),
+      modId: z.string().optional().describe("Optional mod id for the index label."),
+      version: z.string().optional().describe("Optional mod version for the index label."),
+      indexAs: z.string().optional().describe("Optional full index label. Defaults to mod:<jar-name> or mod:<modId>:<version>.")
+    }
+  }, async ({ jarPath, modId, version, indexAs }) => {
+    const result = await modJarIndexer.addModJar({
+      jarPath,
+      modId,
+      version,
+      indexAs
+    });
+
+    return text(JSON.stringify(result, null, 2));
   });
 
   server.registerTool("search_symbol", {

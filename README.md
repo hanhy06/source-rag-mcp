@@ -1,20 +1,22 @@
 # source-rag-mcp
 
-Minecraft decompiled source MCP server for local source search, symbol lookup, reference lookup, and lightweight RAG.
+Minecraft decompiled source MCP server for local source search, symbol lookup, reference lookup, and local embedding RAG.
 
 ## Copyright Boundary
 
-This project does **not** ship Minecraft source code, bytecode, assets, jars, or decompiled output.
+This project does **not** ship Minecraft source code, bytecode, assets, jars, mod jars, or decompiled output.
 
-The package contains only the MCP server code. When you use `add_minecraft_version` or `decompile_classes`, Minecraft files are downloaded or generated only on your local machine under `SOURCE_RAG_DATA` or `./.source-rag`.
+The package contains only the MCP server code. When you use `add_minecraft_version`, `add_mod_jar`, or `decompile_classes`, Minecraft and mod files are downloaded, copied, or generated only on your local machine under `SOURCE_RAG_DATA` or `./.source-rag`.
 
 Do not commit, publish, or redistribute:
 
 * `.source-rag/`
 * `sources/`
 * Minecraft `.jar` files
+* mod `.jar` files
 * Minecraft `.class` files
-* decompiled Minecraft `.java` output
+* mod `.class` files
+* decompiled Minecraft or mod `.java` output
 
 This project is licensed under Apache-2.0. Minecraft is owned by Mojang/Microsoft and is not included in this project.
 
@@ -80,15 +82,53 @@ If you have a jar, `.class` file, or class directory, use `decompile_classes` fi
 
 `decompile_classes` downloads Vineflower into `./.source-rag/tools` on first use.
 
+## Mod Jars
+
+`add_mod_jar` only accepts a local jar path. It does not download mod jars from URLs.
+
+```json
+{
+  "jarPath": "C:\\dev\\minecraft\\afterglow\\run\\mods\\sodium-fabric-0.9.0+mc26.2.jar",
+  "modId": "sodium",
+  "version": "0.9.0+mc26.2"
+}
+```
+
+The resulting index label defaults to:
+
+```text
+mod:<jar-name>
+```
+
+or, when `modId` and `version` are provided:
+
+```text
+mod:<modId>:<version>
+```
+
+You can also provide `indexAs` directly.
+
+## Embeddings
+
+Indexes include local sparse embeddings for each source chunk. No external embedding API, model download, or network call is used for embeddings.
+
+`rag_search` combines:
+
+* lexical token matching
+* cosine similarity over local source-code embeddings
+
+Existing indexes created before this feature should be rebuilt with `index_sources`, `add_minecraft_version`, or `add_mod_jar` to populate embeddings.
+
 ## Tools
 
 * `list_versions`: list indexed source versions
 * `add_minecraft_version`: download a Minecraft jar from Mojang metadata, decompile it, and index it
+* `add_mod_jar`: decompile and index a local mod jar without downloading anything
 * `index_sources`: index a local decompiled Java source tree
 * `decompile_classes`: decompile class or jar input with Vineflower and optionally index it
 * `search_symbol`: search classes, methods, and fields
 * `search_text`: search raw source lines
-* `rag_search`: search source chunks with lightweight lexical scoring
+* `rag_search`: search source chunks with local sparse embeddings and lexical scoring
 * `get_source`: read a source file by path or class name
 * `get_method_source`: read a method body from a class, including inner class owners and overloaded methods
 * `find_references`: find exact word references

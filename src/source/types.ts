@@ -33,6 +33,7 @@ export type SourceChunk = {
   startLine: number;
   endLine: number;
   text: string;
+  embedding?: Array<[number, number]>;
 };
 
 export type SearchHit = {

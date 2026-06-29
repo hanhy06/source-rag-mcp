@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { LocalEmbedding } from "./LocalEmbedding.js";
 import type { MethodLookup, SearchHit, SourceChunk, SourceFile, SourceSymbol, SourceVersion, VersionIndex } from "./types.js";
 
 const DEFAULT_DATA_DIR = ".source-rag";
@@ -13,6 +14,7 @@ const FIELD_PATTERN = /^\s*(?:public|protected|private|static|final|volatile|tra
 
 export class SourceIndex {
   private readonly dataDir: string;
+  private readonly embedding = new LocalEmbedding();
 
   public constructor(dataDir = process.env.SOURCE_RAG_DATA ?? path.resolve(DEFAULT_DATA_DIR)) {
     this.dataDir = path.resolve(dataDir);
@@ -128,11 +130,14 @@ export class SourceIndex {
   public async ragSearch(version: string | undefined, query: string, limit: number): Promise<SearchHit[]> {
     const indexes = await this.loadIndexes(version);
     const terms = this.tokenize(query);
+    const queryEmbedding = this.embedding.embed(query);
     const hits: SearchHit[] = [];
 
     for (const index of indexes) {
       for (const chunk of index.chunks) {
-        const score = this.scoreText(chunk.text, terms, query);
+        const lexicalScore = this.scoreText(chunk.text, terms, query);
+        const embeddingScore = this.embedding.similarity(queryEmbedding, chunk.embedding);
+        const score = lexicalScore + embeddingScore * 100;
         if (score <= 0) continue;
 
         hits.push({
@@ -140,7 +145,7 @@ export class SourceIndex {
           path: chunk.path,
           line: chunk.startLine,
           owner: chunk.owner,
-          score,
+          score: Number(score.toFixed(4)),
           preview: this.preview(chunk.text)
         });
       }
@@ -291,13 +296,15 @@ export class SourceIndex {
 
     while (start < lines.length) {
       const end = Math.min(start + 80, lines.length);
+      const text = lines.slice(start, end).join("\n");
       chunks.push({
         version: file.version,
         path: file.path,
         owner: file.fullName,
         startLine: start + 1,
         endLine: end,
-        text: lines.slice(start, end).join("\n")
+        text,
+        embedding: this.embedding.embed(text)
       });
       start = end;
     }
