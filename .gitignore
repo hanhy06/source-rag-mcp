@@ -1,9 +1,12 @@
 node_modules/
 dist/
+sources/
+test/
+
 .source-rag/
 .decompile-test/
 .source-rag-*/
-sources/
+
 *.jar
 *.class
 *.log

@@ -8,6 +8,16 @@ import { VersionDownloader } from "./source/VersionDownloader.js";
 
 const optionalVersionSchema = z.string().optional().describe("Minecraft version. Omit to search every indexed version.");
 const limitSchema = z.number().int().min(1).max(100).default(20);
+const resultSchema = { result: z.unknown() };
+const sourceTypeSchema = z.enum(["minecraft", "mod", "custom"]);
+const symbolKindSchema = z.enum(["class", "method", "field"]);
+const searchModeSchema = z.enum(["auto", "symbol", "text", "hybrid"]);
+const searchFilterSchema = {
+  sourceTypes: z.array(sourceTypeSchema).optional().describe("Limit results to Minecraft, mod, or custom source indexes."),
+  pathPrefix: z.string().optional().describe("Only return source paths under this normalized prefix."),
+  owner: z.string().optional().describe("Only return this class owner and its nested owners."),
+  contextLines: z.number().int().min(0).max(20).default(2).describe("Surrounding lines for text and reference previews.")
+};
 
 export function createServer(): McpServer {
   const index = new SourceIndex();
@@ -16,26 +26,35 @@ export function createServer(): McpServer {
   const modJarIndexer = new ModJarIndexer();
   const server = new McpServer({
     name: "source-rag-mcp",
-    version: "0.1.0"
+    version: "0.2.0"
   });
 
   server.registerTool("list_versions", {
-    description: "List indexed Minecraft source versions.",
-    inputSchema: {}
+    description: "List indexed Minecraft, mod, and custom source indexes with source metadata.",
+    inputSchema: {},
+    outputSchema: resultSchema
   }, async () => {
     const versions = await index.listVersions();
-    return text(JSON.stringify(versions, null, 2));
+    return structured(versions);
   });
 
   server.registerTool("index_sources", {
     description: "Index a local decompiled Minecraft Java source tree.",
     inputSchema: {
       version: z.string().describe("Version label, for example 26.1."),
-      sourceDir: z.string().describe("Folder containing decompiled .java sources.")
-    }
-  }, async ({ version, sourceDir }) => {
-    const meta = await index.indexSources(version, sourceDir);
-    return text(JSON.stringify(meta, null, 2));
+      sourceDir: z.string().describe("Folder containing decompiled .java sources."),
+      sourceType: sourceTypeSchema.default("custom"),
+      minecraftVersion: z.string().optional(),
+      modId: z.string().optional(),
+      modVersion: z.string().optional(),
+      mappingNamespace: z.string().optional()
+    },
+    outputSchema: resultSchema
+  }, async ({ version, sourceDir, sourceType, minecraftVersion, modId, modVersion, mappingNamespace }) => {
+    const meta = await index.indexSources(version, sourceDir, {
+      sourceType, minecraftVersion, modId, modVersion, mappingNamespace
+    });
+    return structured(meta);
   });
 
   server.registerTool("decompile_classes", {
@@ -45,14 +64,15 @@ export function createServer(): McpServer {
       outputDir: z.string().describe("Directory where decompiled .java files should be written."),
       version: z.string().optional().describe("Version label to index after decompilation."),
       indexAfter: z.boolean().default(false)
-    }
+    },
+    outputSchema: resultSchema
   }, async ({ input, outputDir, version, indexAfter }) => {
     const result = await decompiler.decompile(input, outputDir);
-    if (!indexAfter) return text(JSON.stringify(result, null, 2));
+    if (!indexAfter) return structured(result);
     if (!version) throw new Error("version is required when indexAfter is true.");
 
     const meta = await index.indexSources(version, outputDir);
-    return text(JSON.stringify({ decompile: result, index: meta }, null, 2));
+    return structured({ decompile: result, index: meta });
   });
 
   server.registerTool("add_minecraft_version", {
@@ -61,15 +81,20 @@ export function createServer(): McpServer {
       version: z.string().describe("Exact version id, latest_release, latest_snapshot, or latest."),
       side: z.enum(["client", "server"]).default("client"),
       indexAs: z.string().optional().describe("Optional index label. Defaults to the resolved version id.")
-    }
+    },
+    outputSchema: resultSchema
   }, async ({ version, side, indexAs }) => {
     const download = await downloader.downloadVersion(version, side);
     const label = indexAs ?? download.resolvedVersion;
     const sourceDir = index.sourceDir(label);
     const decompile = await decompiler.decompile(download.jarPath, sourceDir);
-    const meta = await index.indexSources(label, sourceDir);
+    const meta = await index.indexSources(label, sourceDir, {
+      sourceType: "minecraft",
+      minecraftVersion: download.resolvedVersion,
+      side
+    });
 
-    return text(JSON.stringify({ download, decompile, index: meta }, null, 2));
+    return structured({ download, decompile, index: meta });
   });
 
   server.registerTool("add_mod_jar", {
@@ -79,7 +104,8 @@ export function createServer(): McpServer {
       modId: z.string().optional().describe("Optional mod id for the index label."),
       version: z.string().optional().describe("Optional mod version for the index label."),
       indexAs: z.string().optional().describe("Optional full index label. Defaults to mod:<jar-name> or mod:<modId>:<version>.")
-    }
+    },
+    outputSchema: resultSchema
   }, async ({ jarPath, modId, version, indexAs }) => {
     const result = await modJarIndexer.addModJar({
       jarPath,
@@ -88,7 +114,7 @@ export function createServer(): McpServer {
       indexAs
     });
 
-    return text(JSON.stringify(result, null, 2));
+    return structured(result);
   });
 
   server.registerTool("search_symbol", {
@@ -96,11 +122,14 @@ export function createServer(): McpServer {
     inputSchema: {
       version: optionalVersionSchema,
       query: z.string(),
-      limit: limitSchema
-    }
-  }, async ({ version, query, limit }) => {
-    const hits = await index.searchSymbol(version, query, limit);
-    return text(JSON.stringify(hits, null, 2));
+      limit: limitSchema,
+      kinds: z.array(symbolKindSchema).optional(),
+      ...searchFilterSchema
+    },
+    outputSchema: resultSchema
+  }, async ({ version, query, limit, kinds, sourceTypes, pathPrefix, owner }) => {
+    const hits = await index.searchSymbol(version, query, limit, { kinds, sourceTypes, pathPrefix, owner });
+    return structured(hits);
   });
 
   server.registerTool("search_text", {
@@ -108,23 +137,44 @@ export function createServer(): McpServer {
     inputSchema: {
       version: optionalVersionSchema,
       query: z.string(),
-      limit: limitSchema
-    }
-  }, async ({ version, query, limit }) => {
-    const hits = await index.searchText(version, query, limit);
-    return text(JSON.stringify(hits, null, 2));
+      limit: limitSchema,
+      ...searchFilterSchema
+    },
+    outputSchema: resultSchema
+  }, async ({ version, query, limit, sourceTypes, pathPrefix, owner, contextLines }) => {
+    const hits = await index.searchText(version, query, limit, { sourceTypes, pathPrefix, owner, contextLines });
+    return structured(hits);
   });
 
   server.registerTool("rag_search", {
-    description: "Search source chunks with lightweight lexical RAG scoring.",
+    description: "Search class and method chunks with BM25 plus local Jina code embeddings.",
     inputSchema: {
       version: optionalVersionSchema,
       query: z.string(),
-      limit: limitSchema
-    }
-  }, async ({ version, query, limit }) => {
-    const hits = await index.ragSearch(version, query, limit);
-    return text(JSON.stringify(hits, null, 2));
+      limit: limitSchema,
+      ...searchFilterSchema
+    },
+    outputSchema: resultSchema
+  }, async ({ version, query, limit, sourceTypes, pathPrefix, owner, contextLines }) => {
+    const hits = await index.ragSearch(version, query, limit, { sourceTypes, pathPrefix, owner, contextLines });
+    return structured(hits);
+  });
+
+  server.registerTool("search_code", {
+    description: "Primary code search tool. Auto mode fuses symbol, exact text, BM25, and code-embedding results.",
+    inputSchema: {
+      version: optionalVersionSchema,
+      query: z.string().describe("A symbol, code fragment, or natural-language question."),
+      mode: searchModeSchema.default("auto"),
+      limit: limitSchema,
+      kinds: z.array(symbolKindSchema).optional(),
+      ...searchFilterSchema
+    },
+    outputSchema: resultSchema
+  }, async ({ version, query, mode, limit, kinds, sourceTypes, pathPrefix, owner, contextLines }) => {
+    return structured(await index.searchCode(version, query, limit, mode, {
+      kinds, sourceTypes, pathPrefix, owner, contextLines
+    }));
   });
 
   server.registerTool("get_source", {
@@ -132,10 +182,32 @@ export function createServer(): McpServer {
     inputSchema: {
       version: z.string(),
       fileOrClass: z.string()
-    }
+    },
+    outputSchema: resultSchema
   }, async ({ version, fileOrClass }) => {
     const source = await index.getSource(version, fileOrClass);
-    return text(source.text);
+    return structured({
+      version: source.version,
+      path: source.path,
+      owner: source.fullName,
+      startLine: 1,
+      endLine: source.text.split(/\r?\n/).length,
+      text: source.text
+    });
+  });
+
+  server.registerTool("get_source_range", {
+    description: "Read an inclusive line range from a source file with optional surrounding context.",
+    inputSchema: {
+      version: z.string(),
+      fileOrClass: z.string(),
+      startLine: z.number().int().min(1),
+      endLine: z.number().int().min(1),
+      contextLines: z.number().int().min(0).max(50).default(3)
+    },
+    outputSchema: resultSchema
+  }, async ({ version, fileOrClass, startLine, endLine, contextLines }) => {
+    return structured(await index.getSourceRange(version, fileOrClass, startLine, endLine, contextLines));
   });
 
   server.registerTool("get_method_source", {
@@ -148,7 +220,8 @@ export function createServer(): McpServer {
       parameterTypes: z.array(z.string()).optional().describe("Optional ordered parameter type filter for overloaded methods."),
       parameterCount: z.number().int().min(0).optional().describe("Optional parameter count filter for overloaded methods."),
       overloadIndex: z.number().int().min(0).optional().describe("Zero-based match index after other overload filters.")
-    }
+    },
+    outputSchema: resultSchema
   }, async ({ version, owner, method, signature, parameterTypes, parameterCount, overloadIndex }) => {
     const hit = await index.getMethodSource(version, owner, method, {
       signature,
@@ -156,7 +229,26 @@ export function createServer(): McpServer {
       parameterCount,
       overloadIndex
     });
-    return text(hit.preview);
+    return structured(hit);
+  });
+
+  server.registerTool("compare_method_source", {
+    description: "Compare the same method across two indexed versions and return both bodies plus a unified diff.",
+    inputSchema: {
+      fromVersion: z.string(),
+      toVersion: z.string(),
+      owner: z.string(),
+      method: z.string(),
+      signature: z.string().optional(),
+      parameterTypes: z.array(z.string()).optional(),
+      parameterCount: z.number().int().min(0).optional(),
+      overloadIndex: z.number().int().min(0).optional()
+    },
+    outputSchema: resultSchema
+  }, async ({ fromVersion, toVersion, owner, method, signature, parameterTypes, parameterCount, overloadIndex }) => {
+    return structured(await index.compareMethodSource(fromVersion, toVersion, owner, method, {
+      signature, parameterTypes, parameterCount, overloadIndex
+    }));
   });
 
   server.registerTool("find_references", {
@@ -164,23 +256,30 @@ export function createServer(): McpServer {
     inputSchema: {
       version: optionalVersionSchema,
       symbol: z.string(),
-      limit: limitSchema
-    }
-  }, async ({ version, symbol, limit }) => {
-    const hits = await index.findReferences(version, symbol, limit);
-    return text(JSON.stringify(hits, null, 2));
+      limit: limitSchema,
+      excludeDeclaration: z.boolean().default(true),
+      ...searchFilterSchema
+    },
+    outputSchema: resultSchema
+  }, async ({ version, symbol, limit, excludeDeclaration, sourceTypes, pathPrefix, owner, contextLines }) => {
+    const hits = await index.findReferences(version, symbol, limit, {
+      excludeDeclaration, sourceTypes, pathPrefix, owner, contextLines
+    });
+    return structured(hits);
   });
 
   return server;
 }
 
-function text(value: string) {
+function structured(value: unknown) {
+  const payload = { result: value };
   return {
     content: [
       {
         type: "text" as const,
-        text: value
+        text: JSON.stringify(payload, null, 2)
       }
-    ]
+    ],
+    structuredContent: payload
   };
 }

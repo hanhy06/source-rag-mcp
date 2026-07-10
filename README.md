@@ -39,6 +39,17 @@ node ./dist/index.js
 The server writes index data to `./.source-rag` by default.
 You can override this location with the `SOURCE_RAG_DATA` environment variable.
 
+### Windows accelerated embeddings
+
+The bundled Node runtime supports DirectML without an additional Python environment. This is the recommended Windows setup:
+
+```powershell
+$env:SOURCE_RAG_EMBEDDING_DEVICE = "dml"
+$env:SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
+```
+
+The 1024-token limit prevents unusually large decompiler methods from exhausting GPU memory. DirectML sessions use sequential execution and two ONNX CPU threads.
+
 ## First Index
 
 For a normal Minecraft version, use `add_minecraft_version`.
@@ -108,30 +119,43 @@ mod:<modId>:<version>
 
 You can also provide `indexAs` directly.
 
-## Embeddings
+## Hybrid Code Search
 
-Indexes include local sparse embeddings for each source chunk. No external embedding API, model download, or network call is used for embeddings.
+`search_code` is the primary search tool. Its default `auto` mode combines:
 
-`rag_search` combines:
+* exact symbol lookup
+* raw text matches
+* BM25 over identifier-aware tokens
+* cosine similarity over local `jinaai/jina-embeddings-v2-base-code` vectors
 
-* lexical token matching
-* cosine similarity over local source-code embeddings
+Source is chunked at class and method boundaries. Methods longer than 160 lines are split with a 20-line overlap. Dense vectors are normalized, quantized to int8, and stored as base64 to keep the index manageable.
 
-Existing indexes created before this feature should be rebuilt with `index_sources`, `add_minecraft_version`, or `add_mod_jar` to populate embeddings.
+The embedding model is downloaded from Hugging Face on the first new index and cached under `<SOURCE_RAG_DATA>/models`. The default model file is about 642 MB. Inference is local and does not use an external embedding API.
+
+Set `SOURCE_RAG_EMBEDDINGS=disabled` to build and search a BM25-only index. Override the model with `SOURCE_RAG_EMBEDDING_MODEL`; indexes searched together should use the same model. `SOURCE_RAG_EMBEDDING_DEVICE` selects the Transformers.js execution device and defaults to `auto`. On Windows, use `dml` for DirectML acceleration.
+
+`SOURCE_RAG_EMBEDDING_MAX_TOKENS` defaults to 1024 so unusually large decompiler methods cannot exhaust GPU memory. Long methods are already split into overlapping source chunks before this final tokenizer limit is applied.
+
+Indexes created before version 0.2 must be rebuilt with `index_sources`, `add_minecraft_version`, or `add_mod_jar` to receive semantic chunks, BM25 postings, and dense code embeddings.
 
 ## Tools
 
-* `list_versions`: list indexed source versions
+* `list_versions`: list Minecraft, mod, and custom indexes with source metadata
 * `add_minecraft_version`: download a Minecraft jar from Mojang metadata, decompile it, and index it
 * `add_mod_jar`: decompile and index a local mod jar without downloading anything
 * `index_sources`: index a local decompiled Java source tree
 * `decompile_classes`: decompile class or jar input with Vineflower and optionally index it
 * `search_symbol`: search classes, methods, and fields
 * `search_text`: search raw source lines
-* `rag_search`: search source chunks with local sparse embeddings and lexical scoring
+* `rag_search`: search semantic chunks with BM25 and local code embeddings
+* `search_code`: automatically fuse symbol, text, BM25, and code-embedding results
 * `get_source`: read a source file by path or class name
+* `get_source_range`: read an inclusive line range with optional context
 * `get_method_source`: read a method body from a class, including inner class owners and overloaded methods
-* `find_references`: find exact word references
+* `compare_method_source`: compare a method across two indexes and return a unified diff
+* `find_references`: find exact word references with source, path, owner, and declaration filters
+
+All tools return MCP `structuredContent` with a stable `{ "result": ... }` envelope as well as a JSON text representation.
 
 `get_method_source` accepts these optional overload filters:
 
@@ -167,6 +191,8 @@ args = [
 
 [mcp_servers.minecraft-source.env]
 SOURCE_RAG_DATA = "C:\\dev\\minecraft\\source-rag-mcp\\.source-rag"
+SOURCE_RAG_EMBEDDING_DEVICE = "dml"
+SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
 ```
 
 If `node` is not on `PATH`, use an absolute Node executable path for `command` only:
@@ -180,6 +206,8 @@ args = [
 
 [mcp_servers.minecraft-source.env]
 SOURCE_RAG_DATA = "C:\\dev\\minecraft\\source-rag-mcp\\.source-rag"
+SOURCE_RAG_EMBEDDING_DEVICE = "dml"
+SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
 ```
 
 Example:
@@ -193,6 +221,8 @@ args = [
 
 [mcp_servers.minecraft-source.env]
 SOURCE_RAG_DATA = "C:\\dev\\minecraft\\source-rag-mcp\\.source-rag"
+SOURCE_RAG_EMBEDDING_DEVICE = "dml"
+SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
 ```
 
 ## Indexed Sources

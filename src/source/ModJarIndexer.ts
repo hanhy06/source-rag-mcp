@@ -46,7 +46,11 @@ export class ModJarIndexer {
 
     const sourceDir = this.index.sourceDir(indexLabel);
     const decompile = await this.decompiler.decompile(cachedJarPath, sourceDir);
-    const index = await this.index.indexSources(indexLabel, sourceDir);
+    const index = await this.index.indexSources(indexLabel, sourceDir, {
+      sourceType: "mod",
+      modId: parameter.modId ?? this.safeLabelPart(path.basename(jarPath, ".jar")),
+      modVersion: parameter.version
+    });
 
     return {
       jarPath,
