@@ -58,3 +58,13 @@ ${statements}
   assert.ok(chunks.every(chunk => chunk.signature === "void run()"));
   assert.ok(chunks.every(chunk => !chunk.text.includes("consume(") || /consume\(\d+\);/.test(chunk.text)));
 });
+
+test("JavaAnalyzer parses source files larger than the native default input buffer", () => {
+  const fields = Array.from({ length: 4_000 }, (_, index) => `  int field${index};`).join("\n");
+  const source = `class LargeSource {\n${fields}\n}`;
+  assert.ok(source.length > 32 * 1024);
+
+  const analysis = new JavaAnalyzer().analyze(source);
+  assert.equal(analysis.parseErrorCount, 0);
+  assert.equal(analysis.declarations.filter(declaration => declaration.kind === "field").length, 4_000);
+});

@@ -1,6 +1,6 @@
 {
   "name": "source-rag-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local MCP server for indexing and searching Minecraft decompiled sources without redistributing game code.",
   "license": "Apache-2.0",
   "type": "module",

@@ -37,18 +37,18 @@ export class SearchEngine {
     const candidates = this.lexicalCandidates(version, query, Math.max(limit * 4, 40), filter);
     const queryTerms = [...new Set(tokenizeForSearch(query))];
     const ranked = await Promise.all(candidates.map(async candidate => {
-      const source = await this.readSource(candidate.index, this.requireFile(candidate.index, candidate.chunk.path));
-      const lines = source.text.split(/\r?\n/);
+      const sourceText = await this.readSnapshotText(candidate.index, candidate.chunk.path);
+      const lines = sourceText.split(/\r?\n/);
       const chunkText = lines.slice(candidate.chunk.startLine - 1, candidate.chunk.endLine).join("\n");
       const searchable = `${candidate.chunk.owner ?? ""} ${candidate.chunk.name ?? ""} ${candidate.chunk.signature ?? ""}\n${chunkText}`.toLowerCase();
       const coverage = queryTerms.filter(term => searchable.includes(term)).length;
-      return { ...candidate, source, coverage };
+      return { ...candidate, sourceText, coverage };
     }));
     ranked.sort((left, right) => right.coverage - left.coverage || left.chunk.rank - right.chunk.rank);
     const hits: SearchHit[] = [];
     for (let rank = 0; rank < ranked.length && hits.length < limit; rank++) {
-      const { index, chunk, source } = ranked[rank];
-      hits.push(this.chunkHit(index, chunk, query, filter.contextLines ?? 0, 1 / (rank + 1), source));
+      const { index, chunk, sourceText } = ranked[rank];
+      hits.push(this.chunkHit(index, chunk, query, filter.contextLines ?? 0, 1 / (rank + 1), sourceText));
     }
     return hits;
   }
@@ -123,7 +123,7 @@ export class SearchEngine {
       throw new Error(this.notFoundMessage(`Method not found: ${owner}#${method}`, method, candidates));
     }
 
-    const source = await this.readSource(index, this.requireFile(index, hit.path));
+    const sourceText = await this.readSnapshotText(index, hit.path);
     return {
       version,
       path: hit.path,
@@ -133,7 +133,7 @@ export class SearchEngine {
       kind: hit.kind,
       name: hit.name,
       signature: hit.signature,
-      preview: source.text.split(/\r?\n/).slice(hit.startLine - 1, hit.endLine).join("\n")
+      preview: sourceText.split(/\r?\n/).slice(hit.startLine - 1, hit.endLine).join("\n")
     };
   }
 
@@ -161,8 +161,8 @@ export class SearchEngine {
       const chunks = this.withDatabase(index, database => database.searchChunks(this.ftsQuery(symbol), Math.max(limit * 20, 200), filter));
       const declarationCache = new Map<number, Set<number>>();
       for (const chunk of chunks) {
-        const source = await this.readSource(index, this.requireFile(index, chunk.path));
-        const lines = source.text.split(/\r?\n/);
+        const sourceText = await this.readSnapshotText(index, chunk.path);
+        const lines = sourceText.split(/\r?\n/);
         for (let line = chunk.startLine; line <= chunk.endLine; line++) {
           if (!pattern.test(lines[line - 1] ?? "")) continue;
           const key = `${index.label}:${chunk.path}:${line}`;
@@ -227,14 +227,14 @@ export class SearchEngine {
     candidates.sort((left, right) => right.score - left.score);
     const hits: SearchHit[] = [];
     for (const candidate of candidates.slice(0, limit)) {
-      const source = await this.readSource(candidate.index, this.requireFile(candidate.index, candidate.chunk.path));
-      hits.push(this.chunkHit(candidate.index, candidate.chunk, query, filter.contextLines ?? 0, candidate.score, source));
+      const sourceText = await this.readSnapshotText(candidate.index, candidate.chunk.path);
+      hits.push(this.chunkHit(candidate.index, candidate.chunk, query, filter.contextLines ?? 0, candidate.score, sourceText));
     }
     return hits;
   }
 
-  private chunkHit(index: CatalogIndex, chunk: StoredChunk, query: string, contextLines: number, score: number, source: SourceFile): SearchHit {
-    const lines = source.text.split(/\r?\n/);
+  private chunkHit(index: CatalogIndex, chunk: StoredChunk, query: string, contextLines: number, score: number, sourceText: string): SearchHit {
+    const lines = sourceText.split(/\r?\n/);
     const terms = tokenizeForSearch(query);
     let lineIndex = Math.max(0, chunk.startLine - 1);
     let bestScore = -1;
@@ -273,16 +273,8 @@ export class SearchEngine {
     throw new Error(this.notFoundMessage(`Index not found: ${version}`, version, this.catalog.listIndexes().map(candidate => candidate.label)));
   }
 
-  private requireFile(index: CatalogIndex, fileOrClass: string): StoredFile {
-    const file = this.withDatabase(index, database => database.findFile(fileOrClass));
-    if (!file) throw new Error(`Indexed file is missing: ${index.label}:${fileOrClass}`);
-    return file;
-  }
-
   private async readSource(index: CatalogIndex, file: StoredFile): Promise<SourceFile> {
-    const absolutePath = path.resolve(index.sourceDir, ...file.path.split("/"));
-    const sourceRoot = `${path.resolve(index.sourceDir)}${path.sep}`;
-    if (!absolutePath.startsWith(sourceRoot)) throw new Error(`Indexed source path escapes its snapshot: ${file.path}`);
+    const absolutePath = this.snapshotPath(index, file.path);
     return {
       version: index.label,
       path: file.path,
@@ -292,6 +284,17 @@ export class SearchEngine {
       fullName: file.fullName,
       text: await readFile(absolutePath, "utf8")
     };
+  }
+
+  private async readSnapshotText(index: CatalogIndex, relativePath: string): Promise<string> {
+    return await readFile(this.snapshotPath(index, relativePath), "utf8");
+  }
+
+  private snapshotPath(index: CatalogIndex, relativePath: string): string {
+    const absolutePath = path.resolve(index.sourceDir, ...relativePath.split("/"));
+    const sourceRoot = `${path.resolve(index.sourceDir)}${path.sep}`;
+    if (!absolutePath.startsWith(sourceRoot)) throw new Error(`Indexed source path escapes its snapshot: ${relativePath}`);
+    return absolutePath;
   }
 
   private sourceSymbol(index: CatalogIndex, symbol: StoredSymbol): SourceSymbol {

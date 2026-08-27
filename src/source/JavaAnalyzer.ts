@@ -58,7 +58,7 @@ export class JavaAnalyzer {
   }
 
   public analyze(source: string): JavaAnalysis {
-    const tree = this.parser.parse(source);
+    const tree = this.parser.parse(source, undefined, { bufferSize: Math.max(32 * 1024, source.length + 1) });
     const packageNode = tree.rootNode.namedChildren.find(node => node.type === "package_declaration");
     const packageName = packageNode ? packageNode.text.replace(/^\s*package\s+|\s*;\s*$/g, "") : null;
     const declarations: JavaDeclaration[] = [];

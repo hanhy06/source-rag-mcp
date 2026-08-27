@@ -34,7 +34,7 @@ export function createServer(): McpServer {
   const modJarIndexer = new ModJarIndexer(indexBuilder, dataDir);
   const server = new McpServer({
     name: "source-rag-mcp",
-    version: "0.2.0"
+    version: "0.3.0"
   });
   server.server.onclose = () => {
     void search.close();
@@ -46,7 +46,10 @@ export function createServer(): McpServer {
     inputSchema: {},
     outputSchema: resultSchema
   }, async () => {
-    return structured([...catalog.listIndexes(), ...await catalog.listLegacyIndexes()]);
+    const indexes = catalog.listIndexes();
+    const activeLabels = new Set(indexes.map(index => index.label));
+    const legacy = (await catalog.listLegacyIndexes()).filter(index => !activeLabels.has(index.label));
+    return structured([...indexes, ...legacy]);
   });
 
   server.registerTool("index_sources", {
