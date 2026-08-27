@@ -13,6 +13,8 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
   const sourceDir = path.join(root, "sources");
   await cp(path.resolve("test/fixtures"), sourceDir, { recursive: true });
   await writeFile(path.join(sourceDir, "demo", "OtherItem.java"), "package demo; class OtherItem { void damageAndBreak(String reason) {} }");
+  await writeFile(path.join(sourceDir, "demo", "Noise.java"), "package demo; class Noise { String text = \"player held item rendered model player held item rendered model\"; }");
+  await writeFile(path.join(sourceDir, "demo", "PlayerHeldItemRenderer.java"), "package demo; class PlayerHeldItemRenderer {}");
   const catalog = new SourceCatalog(path.join(root, "data"));
   try {
     await new IndexBuilder(catalog, undefined, { enabled: false }).indexSources("fixture", sourceDir, { sourceType: "custom" });
@@ -26,6 +28,9 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
 
     const lexical = await search.searchCode("fixture", "where item durability decreases until it breaks", 5, "auto");
     assert.equal(lexical[0].name, "damageAndBreak");
+
+    const reranked = await search.searchCode("fixture", "Where is a held item rendered on the player model?", 5, "auto");
+    assert.ok(reranked.slice(0, 3).some(hit => hit.owner === "demo.PlayerHeldItemRenderer"));
 
     const method = await search.getMethodSource("fixture", "demo.DurableItem", "damageAndBreak", { parameterTypes: ["int"] });
     assert.match(method.preview, /this\.durability -= amount/);

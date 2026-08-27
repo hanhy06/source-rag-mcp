@@ -79,7 +79,8 @@ export class SearchEngine {
       this.searchText(version, query, candidateLimit, filter),
       this.semanticSearch(version, query, candidateLimit, filter)
     ]);
-    return this.reciprocalRankFusion([symbols, lexical, semantic], [1.2, 1, 1.1], limit);
+    const fused = this.reciprocalRankFusion([symbols, lexical, semantic], [1.2, 1, 1.1], candidateLimit);
+    return this.rerankSearchHits(query, fused, limit);
   }
 
   public async close(): Promise<void> {
@@ -351,6 +352,23 @@ export class SearchEngine {
     }
     return [...fused.values()].sort((left, right) => right.score - left.score).slice(0, limit)
       .map(entry => ({ ...entry.hit, score: Number((entry.score * 1000).toFixed(4)) }));
+  }
+
+  private rerankSearchHits(query: string, hits: SearchHit[], limit: number): SearchHit[] {
+    const queryTerms = [...new Set(tokenizeForSearch(query))];
+    return hits.map((hit, originalRank) => {
+      const metadata = `${hit.path} ${hit.owner ?? ""} ${hit.name ?? ""} ${hit.signature ?? ""}`;
+      const metadataTerms = [...new Set(tokenizeForSearch(metadata))];
+      const coverage = queryTerms.filter(queryTerm => metadataTerms.some(metadataTerm =>
+        queryTerm === metadataTerm || (queryTerm.length >= 4 && metadataTerm.startsWith(queryTerm))
+      )).length;
+      const simpleOwner = hit.owner?.replaceAll("$", ".").split(".").at(-1)?.toLowerCase();
+      const exactIdentity = queryTerms.some(term => term === simpleOwner || term === hit.name?.toLowerCase());
+      const structuralBonus = hit.kind === "class" || hit.kind === "file" ? 0.5 : 0;
+      const score = (hit.score ?? 0) + coverage * 2 + (exactIdentity ? 3 : 0) + structuralBonus;
+      return { hit: { ...hit, score: Number(score.toFixed(4)) }, originalRank };
+    }).sort((left, right) => (right.hit.score ?? 0) - (left.hit.score ?? 0) || left.originalRank - right.originalRank)
+      .slice(0, limit).map(entry => entry.hit);
   }
 
   private matchesMethodLookup(symbol: StoredSymbol, lookup: MethodLookup): boolean {
