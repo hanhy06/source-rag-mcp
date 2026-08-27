@@ -46,7 +46,7 @@ export function createServer(): McpServer {
     inputSchema: {},
     outputSchema: resultSchema
   }, async () => {
-    return structured(catalog.listIndexes());
+    return structured([...catalog.listIndexes(), ...await catalog.listLegacyIndexes()]);
   });
 
   server.registerTool("index_sources", {

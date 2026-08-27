@@ -34,8 +34,8 @@ export class CodeEmbedding {
     if (!this.enabled || texts.length === 0) return [];
     const extractor = await this.getExtractor();
     const result: Int8Array[] = [];
-    const batchSize = Math.max(1, Number(process.env.SOURCE_RAG_EMBEDDING_BATCH_SIZE ?? 10));
-    const progressEvery = Math.max(1, Number(process.env.SOURCE_RAG_EMBEDDING_PROGRESS_EVERY ?? 100));
+    const batchSize = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_BATCH_SIZE", 10, 1);
+    const progressEvery = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_PROGRESS_EVERY", 100, 1);
     const totalBatches = Math.ceil(texts.length / batchSize);
     for (let start = 0; start < texts.length; start += batchSize) {
       const batch = texts.slice(start, start + batchSize);
@@ -68,10 +68,7 @@ export class CodeEmbedding {
         }
       })
       .then(extractor => {
-        extractor.tokenizer._tokenizerConfig.model_max_length = Math.max(
-          128,
-          Number(process.env.SOURCE_RAG_EMBEDDING_MAX_TOKENS ?? 1024)
-        );
+        extractor.tokenizer._tokenizerConfig.model_max_length = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_MAX_TOKENS", 1024, 128);
         return extractor;
       });
     return await this.extractor;
@@ -95,4 +92,12 @@ export function quantizedCosine(left: Int8Array, right: Int8Array): number {
     rightLength += right[i] * right[i];
   }
   return leftLength === 0 || rightLength === 0 ? 0 : dot / Math.sqrt(leftLength * rightLength);
+}
+
+function positiveIntegerEnvironment(name: string, defaultValue: number, minimum: number): number {
+  const rawValue = process.env[name];
+  if (rawValue === undefined) return defaultValue;
+  const value = Number(rawValue);
+  if (!Number.isInteger(value) || value < minimum) throw new Error(`${name} must be an integer greater than or equal to ${minimum}; received ${rawValue}.`);
+  return value;
 }

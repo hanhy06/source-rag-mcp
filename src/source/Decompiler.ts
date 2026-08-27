@@ -1,11 +1,13 @@
-import { createWriteStream } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
 const VINEFLOWER_VERSION = "1.12.0";
 const VINEFLOWER_URL = `https://repo.maven.apache.org/maven2/org/vineflower/vineflower/${VINEFLOWER_VERSION}/vineflower-${VINEFLOWER_VERSION}.jar`;
+const VINEFLOWER_SHA256 = "1dffcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d";
 
 export type DecompileResult = {
   input: string;
@@ -51,18 +53,39 @@ export class Decompiler {
 
     try {
       await stat(jarPath);
-      return jarPath;
+      if (await this.sha256(jarPath) === VINEFLOWER_SHA256) return jarPath;
     } catch {
-      await mkdir(toolDir, { recursive: true });
-      await this.download(VINEFLOWER_URL, jarPath);
+      // download below
+    }
+    await mkdir(toolDir, { recursive: true });
+    const temporaryPath = `${jarPath}.tmp-${randomUUID()}`;
+    try {
+      await this.download(VINEFLOWER_URL, temporaryPath);
+      const actualSha256 = await this.sha256(temporaryPath);
+      if (actualSha256 !== VINEFLOWER_SHA256) throw new Error(`Vineflower SHA-256 mismatch. Expected ${VINEFLOWER_SHA256}, received ${actualSha256}.`);
+      await rm(jarPath, { force: true });
+      await rename(temporaryPath, jarPath);
       return jarPath;
+    } catch (error) {
+      await rm(temporaryPath, { force: true });
+      throw error;
     }
   }
 
-  private async download(url: string, outputPath: string): Promise<void> {
+  private async download(url: string, outputPath: string, redirects = 0): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const request = https.get(url, response => {
+        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume();
+          if (redirects >= 5) {
+            reject(new Error(`Too many redirects while downloading: ${url}`));
+            return;
+          }
+          void this.download(new URL(response.headers.location, url).toString(), outputPath, redirects + 1).then(resolve, reject);
+          return;
+        }
         if (response.statusCode !== 200) {
+          response.resume();
           reject(new Error(`Download failed: ${response.statusCode} ${response.statusMessage}`));
           return;
         }
@@ -77,6 +100,16 @@ export class Decompiler {
       });
 
       request.on("error", reject);
+    });
+  }
+
+  private async sha256(filePath: string): Promise<string> {
+    return await new Promise((resolve, reject) => {
+      const hash = createHash("sha256");
+      const input = createReadStream(filePath);
+      input.on("data", chunk => hash.update(chunk));
+      input.on("end", () => resolve(hash.digest("hex")));
+      input.on("error", reject);
     });
   }
 

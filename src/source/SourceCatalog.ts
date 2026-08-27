@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { mkdir, rename } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -41,6 +41,17 @@ export type CatalogIndex = CatalogIndexInput & {
   vectorPath: string;
 };
 
+export type LegacyIndex = {
+  label: string;
+  indexFormatVersion: number;
+  sourceDir: string;
+  indexedAt?: string;
+  rebuildRequired: true;
+};
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ABANDONED_AGE_MS = 24 * 60 * 60 * 1_000;
+
 export class SourceCatalog {
   private readonly dataDir: string;
   private readonly database: DatabaseSync;
@@ -72,6 +83,68 @@ export class SourceCatalog {
       databasePath: path.join(stagingDir, "index.sqlite"),
       vectorPath: path.join(stagingDir, "vectors.i8")
     };
+  }
+
+  public async acquireBuildLock(label: string): Promise<{ release: () => Promise<void> }> {
+    const lockDir = path.join(this.dataDir, "locks");
+    const lockName = `${createHash("sha256").update(label).digest("hex")}.lock`;
+    const lockPath = path.join(lockDir, lockName);
+    await mkdir(lockDir, { recursive: true });
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const handle = await open(lockPath, "wx");
+        await handle.writeFile(JSON.stringify({ label, pid: process.pid, createdAt: new Date().toISOString() }), "utf8");
+        let released = false;
+        return {
+          release: async () => {
+            if (released) return;
+            released = true;
+            await handle.close();
+            await rm(lockPath, { force: true });
+          }
+        };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const lockStat = await stat(lockPath).catch(() => undefined);
+        if (attempt === 0 && lockStat && Date.now() - lockStat.mtimeMs >= ABANDONED_AGE_MS) {
+          await rm(lockPath, { force: true });
+          continue;
+        }
+        throw new Error(`Index build is already running for label: ${label}`);
+      }
+    }
+    throw new Error(`Unable to acquire index build lock: ${label}`);
+  }
+
+  public async runMaintenance(): Promise<void> {
+    const activeGenerations = new Set(this.listIndexes().map(index => index.generationId));
+    await this.removeAbandonedDirectories(path.join(this.dataDir, "staging"));
+    await this.removeAbandonedDirectories(path.join(this.dataDir, "work"));
+    await this.removeAbandonedDirectories(path.join(this.dataDir, "indexes"), activeGenerations);
+  }
+
+  public async listLegacyIndexes(): Promise<LegacyIndex[]> {
+    const entries = await readdir(this.dataDir, { withFileTypes: true });
+    const legacy: LegacyIndex[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const meta = JSON.parse(await readFile(path.join(this.dataDir, entry.name, "meta.json"), "utf8")) as Record<string, unknown>;
+        const format = Number(meta.indexFormatVersion ?? 1);
+        if (format >= INDEX_FORMAT_VERSION || typeof meta.version !== "string" || typeof meta.sourceDir !== "string") continue;
+        legacy.push({
+          label: meta.version,
+          indexFormatVersion: format,
+          sourceDir: meta.sourceDir,
+          ...(typeof meta.indexedAt === "string" ? { indexedAt: meta.indexedAt } : {}),
+          rebuildRequired: true
+        });
+      } catch {
+        continue;
+      }
+    }
+    return legacy.sort((left, right) => left.label.localeCompare(right.label));
   }
 
   public async activateBuild(build: IndexBuildPaths, input: CatalogIndexInput): Promise<CatalogIndex | undefined> {
@@ -138,7 +211,7 @@ export class SourceCatalog {
   }
 
   public generationDir(generationId: string): string {
-    if (!/^[0-9a-f-]{36}$/i.test(generationId)) throw new Error(`Invalid generation id: ${generationId}`);
+    if (!UUID_PATTERN.test(generationId)) throw new Error(`Invalid generation id: ${generationId}`);
     return path.join(this.dataDir, "indexes", generationId);
   }
 
@@ -195,6 +268,22 @@ export class SourceCatalog {
         embedding_dimensions INTEGER
       ) STRICT;
     `);
+  }
+
+  private async removeAbandonedDirectories(parent: string, excluded = new Set<string>()): Promise<void> {
+    const entries = await readdir(parent, { withFileTypes: true }).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || excluded.has(entry.name)) continue;
+      const target = path.resolve(parent, entry.name);
+      const expectedParent = `${path.resolve(parent)}${path.sep}`;
+      if (!target.startsWith(expectedParent)) continue;
+      const targetStat = await stat(target);
+      if (Date.now() - targetStat.mtimeMs < ABANDONED_AGE_MS) continue;
+      await rm(target, { recursive: true, force: true });
+    }
   }
 }
 

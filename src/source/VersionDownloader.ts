@@ -1,5 +1,6 @@
-import { createWriteStream } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
 
@@ -63,8 +64,11 @@ export class VersionDownloader {
 
     const versionJsonPath = path.join(versionDir, "version.json");
     const jarPath = path.join(versionDir, `${side}.jar`);
-    await writeFile(versionJsonPath, JSON.stringify(versionJson, null, 2), "utf8");
-    await this.downloadFile(download.url, jarPath, download.size);
+    const temporaryVersionJsonPath = `${versionJsonPath}.tmp-${randomUUID()}`;
+    await writeFile(temporaryVersionJsonPath, JSON.stringify(versionJson, null, 2), "utf8");
+    await rm(versionJsonPath, { force: true });
+    await rename(temporaryVersionJsonPath, versionJsonPath);
+    await this.downloadFile(download.url, jarPath, download.size, download.sha1);
 
     return {
       requestedVersion: version,
@@ -86,10 +90,20 @@ export class VersionDownloader {
     return JSON.parse(text) as T;
   }
 
-  private async fetchText(url: string): Promise<string> {
+  private async fetchText(url: string, redirects = 0): Promise<string> {
     return await new Promise((resolve, reject) => {
       const request = https.get(url, response => {
+        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume();
+          if (redirects >= 5) {
+            reject(new Error(`Too many redirects while fetching: ${url}`));
+            return;
+          }
+          void this.fetchText(new URL(response.headers.location, url).toString(), redirects + 1).then(resolve, reject);
+          return;
+        }
         if (response.statusCode !== 200) {
+          response.resume();
           reject(new Error(`Request failed: ${response.statusCode} ${response.statusMessage}`));
           return;
         }
@@ -103,17 +117,43 @@ export class VersionDownloader {
     });
   }
 
-  private async downloadFile(url: string, outputPath: string, expectedSize: number): Promise<void> {
+  private async downloadFile(url: string, outputPath: string, expectedSize: number, expectedSha1: string): Promise<void> {
     try {
       const existing = await stat(outputPath);
-      if (existing.size === expectedSize) return;
+      if (existing.size === expectedSize && await this.sha1(outputPath) === expectedSha1.toLowerCase()) return;
     } catch {
       // download below
     }
 
+    const temporaryPath = `${outputPath}.tmp-${randomUUID()}`;
+    try {
+      await this.writeDownload(url, temporaryPath);
+      const downloaded = await stat(temporaryPath);
+      if (downloaded.size !== expectedSize) throw new Error(`Download size mismatch. Expected ${expectedSize}, received ${downloaded.size}.`);
+      const actualSha1 = await this.sha1(temporaryPath);
+      if (actualSha1 !== expectedSha1.toLowerCase()) throw new Error(`Download SHA-1 mismatch. Expected ${expectedSha1}, received ${actualSha1}.`);
+      await rm(outputPath, { force: true });
+      await rename(temporaryPath, outputPath);
+    } catch (error) {
+      await rm(temporaryPath, { force: true });
+      throw error;
+    }
+  }
+
+  private async writeDownload(url: string, outputPath: string, redirects = 0): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const request = https.get(url, response => {
+        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume();
+          if (redirects >= 5) {
+            reject(new Error(`Too many redirects while downloading: ${url}`));
+            return;
+          }
+          void this.writeDownload(new URL(response.headers.location, url).toString(), outputPath, redirects + 1).then(resolve, reject);
+          return;
+        }
         if (response.statusCode !== 200) {
+          response.resume();
           reject(new Error(`Download failed: ${response.statusCode} ${response.statusMessage}`));
           return;
         }
@@ -128,6 +168,16 @@ export class VersionDownloader {
       });
 
       request.on("error", reject);
+    });
+  }
+
+  private async sha1(filePath: string): Promise<string> {
+    return await new Promise((resolve, reject) => {
+      const hash = createHash("sha1");
+      const input = createReadStream(filePath);
+      input.on("data", chunk => hash.update(chunk));
+      input.on("end", () => resolve(hash.digest("hex")));
+      input.on("error", reject);
     });
   }
 }

@@ -33,6 +33,16 @@ export class IndexBuilder {
 
   public async indexSources(label: string, sourceDir: string, metadata: BuildIndexMetadata): Promise<CatalogIndex> {
     if (!label.trim()) throw new Error("Index label must not be empty.");
+    await this.catalog.runMaintenance();
+    const lock = await this.catalog.acquireBuildLock(label);
+    try {
+      return await this.buildIndex(label, sourceDir, metadata);
+    } finally {
+      await lock.release();
+    }
+  }
+
+  private async buildIndex(label: string, sourceDir: string, metadata: BuildIndexMetadata): Promise<CatalogIndex> {
     const absoluteSourceDir = path.resolve(sourceDir);
     const sourceStat = await stat(absoluteSourceDir);
     if (!sourceStat.isDirectory()) throw new Error(`sourceDir is not a directory: ${absoluteSourceDir}`);

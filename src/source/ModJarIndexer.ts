@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { Decompiler, type DecompileResult } from "./Decompiler.js";
@@ -44,7 +44,15 @@ export class ModJarIndexer {
     await mkdir(cacheDir, { recursive: true });
 
     const cachedJarPath = path.join(cacheDir, "mod.jar");
-    await copyFile(jarPath, cachedJarPath);
+    const temporaryJarPath = `${cachedJarPath}.tmp-${randomUUID()}`;
+    try {
+      await copyFile(jarPath, temporaryJarPath);
+      await rm(cachedJarPath, { force: true });
+      await rename(temporaryJarPath, cachedJarPath);
+    } catch (error) {
+      await rm(temporaryJarPath, { force: true });
+      throw error;
+    }
 
     const sourceDir = path.join(this.dataDir, "work", randomUUID());
     let decompile: DecompileResult;

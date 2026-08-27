@@ -57,6 +57,7 @@ The 1024-token limit prevents unusually large decompiler methods from exhausting
 
 For a normal Minecraft version, use `add_minecraft_version`.
 The MCP server will download the Minecraft jar from Mojang metadata, decompile it, and index it.
+Minecraft jars are written through temporary files and verified against Mojang's declared size and SHA-1 before becoming active. The cached Vineflower jar is likewise verified against its pinned SHA-256.
 
 ```json
 {
@@ -134,6 +135,7 @@ You can also provide `indexAs` directly.
 Tree-sitter extracts classes, methods, constructors, and fields without treating local variables as fields. Source is chunked at declaration and statement boundaries. Long methods are split between top-level statements with a small overlap. Dense vectors are normalized, quantized to int8, and stored as contiguous rows in a binary vector file.
 
 Each index generation uses a managed source snapshot, a SQLite symbol/FTS database, and an optional vector file. Display labels never become filesystem paths directly. A completed generation replaces the active catalog entry atomically, so a failed rebuild leaves the previous generation available.
+Builds for the same label use a filesystem lock. Abandoned staging, work, and inactive generation directories older than 24 hours are removed during later builds; active generations and legacy v2 data are never removed by this maintenance pass.
 
 The embedding model is downloaded from Hugging Face on the first new index and cached under `<SOURCE_RAG_DATA>/models`. The default model file is about 642 MB. Inference is local and does not use an external embedding API.
 
