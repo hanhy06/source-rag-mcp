@@ -115,16 +115,19 @@ export class SearchEngine {
 
   public async getMethodSource(version: string, owner: string, method: string, lookup: MethodLookup = {}): Promise<SearchHit> {
     const index = this.requireIndex(version);
-    const methods = this.withDatabase(index, database => database.findMethods(owner, method))
-      .filter(symbol => this.matchesMethodLookup(symbol, lookup));
-    const matchingOwners = [...new Set(methods.map(symbol => symbol.owner).filter(candidate => candidate !== null))];
+    const ownerMethods = this.withDatabase(index, database => database.findMethods(owner, method));
+    const matchingOwners = [...new Set(ownerMethods.map(symbol => symbol.owner).filter(candidate => candidate !== null))];
     if (!owner.replaceAll("$", ".").includes(".") && matchingOwners.length > 1) {
       throw new Error(`Ambiguous class owner: ${owner}. Candidates: ${matchingOwners.join(", ")}`);
     }
+
+    const methods = ownerMethods.filter(symbol => this.matchesMethodLookup(symbol, lookup));
     const hit = methods[lookup.overloadIndex ?? 0];
     if (!hit) {
-      const candidates = this.withDatabase(index, database => database.searchSymbols(method, 20, { kinds: ["method", "constructor"] })
-        .map(symbol => `${symbol.owner ?? symbol.path}#${symbol.signature}`));
+      const candidates = ownerMethods.length > 0
+        ? ownerMethods.map(symbol => `${symbol.owner ?? symbol.path}#${symbol.signature}`)
+        : this.withDatabase(index, database => database.searchSymbols(method, 20, { kinds: ["method", "constructor"] })
+          .map(symbol => `${symbol.owner ?? symbol.path}#${symbol.signature}`));
       throw new Error(this.notFoundMessage(`Method not found: ${owner}#${method}`, method, candidates));
     }
 

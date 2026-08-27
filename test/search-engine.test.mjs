@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
   const root = await mkdtemp(path.join(os.tmpdir(), "source-rag-search-"));
   const sourceDir = path.join(root, "sources");
   await cp(path.resolve("test/fixtures"), sourceDir, { recursive: true });
+  await writeFile(path.join(sourceDir, "demo", "OtherItem.java"), "package demo; class OtherItem { void damageAndBreak(String reason) {} }");
   const catalog = new SourceCatalog(path.join(root, "data"));
   try {
     await new IndexBuilder(catalog, undefined, { enabled: false }).indexSources("fixture", sourceDir, { sourceType: "custom" });
@@ -34,7 +35,16 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
 
     await assert.rejects(
       search.getMethodSource("fixture", "MissingOwner", "damageAndBreak"),
-      /Did you mean: demo\.DurableItem#.*damageAndBreak/
+      /Did you mean: .*demo\.DurableItem#.*damageAndBreak/
+    );
+
+    await assert.rejects(
+      search.getMethodSource("fixture", "DurableItem", "damageAndBreak", { parameterCount: 99 }),
+      error => {
+        assert.match(error.message, /Did you mean: demo\.DurableItem#.*damageAndBreak/);
+        assert.doesNotMatch(error.message, /OtherItem/);
+        return true;
+      }
     );
 
     const references = await search.findReferences("fixture", "breakItem", 10, { excludeDeclaration: true });
