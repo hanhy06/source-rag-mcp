@@ -234,12 +234,14 @@ export class IndexDatabase {
 
   public findMethods(owner: string, name: string): StoredSymbol[] {
     const normalizedOwner = owner.replaceAll("$", ".");
+    const simpleOwner = normalizedOwner.includes(".") ? 0 : 1;
     const rows = this.database.prepare(`
       SELECT s.*, f.path
       FROM symbols s JOIN files f ON f.id = s.file_id
-      WHERE s.kind IN ('method', 'constructor') AND s.name = ? AND replace(s.owner, '$', '.') = ?
-      ORDER BY s.start_line
-    `).all(name, normalizedOwner) as Array<Record<string, string | number | null>>;
+      WHERE s.kind IN ('method', 'constructor') AND s.name = ?
+        AND (replace(s.owner, '$', '.') = ? OR (? = 1 AND replace(s.owner, '$', '.') LIKE ? ESCAPE '\\'))
+      ORDER BY CASE WHEN replace(s.owner, '$', '.') = ? THEN 0 ELSE 1 END, s.owner, s.start_line
+    `).all(name, normalizedOwner, simpleOwner, `%.${escapeLike(normalizedOwner)}`, normalizedOwner) as Array<Record<string, string | number | null>>;
     return rows.map(row => this.storedSymbol(row));
   }
 

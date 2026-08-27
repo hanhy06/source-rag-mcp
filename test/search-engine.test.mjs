@@ -29,6 +29,14 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
     const method = await search.getMethodSource("fixture", "demo.DurableItem", "damageAndBreak", { parameterTypes: ["int"] });
     assert.match(method.preview, /this\.durability -= amount/);
 
+    const simpleOwnerMethod = await search.getMethodSource("fixture", "DurableItem", "damageAndBreak", { parameterTypes: ["int"] });
+    assert.equal(simpleOwnerMethod.owner, "demo.DurableItem");
+
+    await assert.rejects(
+      search.getMethodSource("fixture", "MissingOwner", "damageAndBreak"),
+      /Did you mean: demo\.DurableItem#.*damageAndBreak/
+    );
+
     const references = await search.findReferences("fixture", "breakItem", 10, { excludeDeclaration: true });
     assert.equal(references.length, 1);
     assert.match(references[0].preview, /this\.breakItem/);

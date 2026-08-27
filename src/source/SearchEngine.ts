@@ -117,9 +117,14 @@ export class SearchEngine {
     const index = this.requireIndex(version);
     const methods = this.withDatabase(index, database => database.findMethods(owner, method))
       .filter(symbol => this.matchesMethodLookup(symbol, lookup));
+    const matchingOwners = [...new Set(methods.map(symbol => symbol.owner).filter(candidate => candidate !== null))];
+    if (!owner.replaceAll("$", ".").includes(".") && matchingOwners.length > 1) {
+      throw new Error(`Ambiguous class owner: ${owner}. Candidates: ${matchingOwners.join(", ")}`);
+    }
     const hit = methods[lookup.overloadIndex ?? 0];
     if (!hit) {
-      const candidates = this.withDatabase(index, database => database.searchSymbols(method, 20, { kinds: ["method", "constructor"] }).map(symbol => symbol.name));
+      const candidates = this.withDatabase(index, database => database.searchSymbols(method, 20, { kinds: ["method", "constructor"] })
+        .map(symbol => `${symbol.owner ?? symbol.path}#${symbol.signature}`));
       throw new Error(this.notFoundMessage(`Method not found: ${owner}#${method}`, method, candidates));
     }
 
@@ -377,7 +382,7 @@ export class SearchEngine {
   }
 
   private notFoundMessage(message: string, query: string, candidates: string[]): string {
-    const suggestions = candidates.map(candidate => ({ candidate, distance: editDistance(query.toLowerCase(), candidate.toLowerCase()) }))
+    const suggestions = [...new Set(candidates)].map(candidate => ({ candidate, distance: editDistance(query.toLowerCase(), candidate.toLowerCase()) }))
       .sort((left, right) => left.distance - right.distance || left.candidate.localeCompare(right.candidate)).slice(0, 5).map(entry => entry.candidate);
     return suggestions.length > 0 ? `${message}. Did you mean: ${suggestions.join(", ")}` : message;
   }
