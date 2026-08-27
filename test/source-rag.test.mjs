@@ -44,6 +44,7 @@ test("v3 index and MCP expose structured range, search, and comparison results",
       name: "get_source_range",
       arguments: { version: "fixture-v1", fileOrClass: "demo.DurableItem", startLine: 4, endLine: 9, contextLines: 0 }
     });
+    assert.deepEqual(result.content, []);
     assert.equal(result.structuredContent.result.startLine, 4);
     assert.match(result.structuredContent.result.text, /damageAndBreak/);
     await client.close();

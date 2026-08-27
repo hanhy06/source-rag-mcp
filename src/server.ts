@@ -291,12 +291,7 @@ export function createServer(): McpServer {
 function structured(value: unknown) {
   const payload = { result: value };
   return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify(payload, null, 2)
-      }
-    ],
+    content: [],
     structuredContent: payload
   };
 }
