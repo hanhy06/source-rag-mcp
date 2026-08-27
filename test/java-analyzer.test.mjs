@@ -45,3 +45,16 @@ public record Example(int value) {
   assert.deepEqual(method?.parameterTypes, ["Map<String, List<T>>", "String..."]);
   assert.equal(analysis.parseErrorCount, 0);
 });
+
+test("JavaAnalyzer splits long methods only between top-level statements", () => {
+  const statements = Array.from({ length: 130 }, (_, index) => `    consume(${index});`).join("\n");
+  const analysis = new JavaAnalyzer().analyze(`class LongMethod {
+  void run() {
+${statements}
+  }
+}`);
+  const chunks = analysis.chunks.filter(chunk => chunk.kind === "method");
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every(chunk => chunk.signature === "void run()"));
+  assert.ok(chunks.every(chunk => !chunk.text.includes("consume(") || /consume\(\d+\);/.test(chunk.text)));
+});
