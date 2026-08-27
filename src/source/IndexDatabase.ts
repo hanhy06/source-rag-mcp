@@ -245,6 +245,25 @@ export class IndexDatabase {
     return rows.map(row => this.storedSymbol(row));
   }
 
+  public listParseErrors(limit: number, pathPrefix?: string): Array<{ path: string; parseErrorCount: number }> {
+    const conditions = ["parse_error_count > 0"];
+    const parameters: Array<string | number> = [];
+    if (pathPrefix) {
+      conditions.push("path LIKE ? ESCAPE '\\'");
+      parameters.push(`${escapeLike(pathPrefix.replaceAll("\\", "/"))}%`);
+    }
+    parameters.push(limit);
+
+    const rows = this.database.prepare(`
+      SELECT path, parse_error_count
+      FROM files
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY parse_error_count DESC, path
+      LIMIT ?
+    `).all(...parameters) as Array<{ path: string; parse_error_count: number }>;
+    return rows.map(row => ({ path: row.path, parseErrorCount: row.parse_error_count }));
+  }
+
   public searchChunks(
     ftsQuery: string,
     limit: number,

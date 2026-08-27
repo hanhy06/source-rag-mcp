@@ -227,6 +227,18 @@ export function createServer(): McpServer {
     return structured(await search.getSourceRange(version, fileOrClass, startLine, endLine, contextLines));
   });
 
+  server.registerTool("list_parse_errors", {
+    description: "List indexed source files containing Java parse errors. Returns counts, not exact error locations.",
+    inputSchema: {
+      version: z.string(),
+      limit: limitSchema,
+      pathPrefix: z.string().optional().describe("Only return source paths under this normalized prefix.")
+    },
+    outputSchema: resultSchema
+  }, async ({ version, limit, pathPrefix }) => {
+    return structured(search.listParseErrors(version, limit, pathPrefix));
+  });
+
   server.registerTool("get_method_source", {
     description: "Read a method body from a class. Supports inner class owners and overloaded methods.",
     inputSchema: {

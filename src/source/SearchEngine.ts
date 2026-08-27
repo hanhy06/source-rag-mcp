@@ -6,7 +6,7 @@ import { unifiedDiff } from "./Diff.js";
 import { IndexDatabase, type StoredChunk, type StoredFile, type StoredSymbol } from "./IndexDatabase.js";
 import { tokenizeForSearch } from "./SearchTokenizer.js";
 import { SourceCatalog, type CatalogIndex } from "./SourceCatalog.js";
-import type { MethodComparison, MethodLookup, SearchFilter, SearchHit, SearchMode, SourceFile, SourceRange, SourceSymbol, SourceType } from "./types.js";
+import type { MethodComparison, MethodLookup, ParseErrorFile, SearchFilter, SearchHit, SearchMode, SourceFile, SourceRange, SourceSymbol, SourceType } from "./types.js";
 import { VectorSearch } from "./VectorSearch.js";
 
 export class SearchEngine {
@@ -111,6 +111,12 @@ export class SearchEngine {
       endLine: actualEnd,
       text: lines.slice(actualStart - 1, actualEnd).join("\n")
     };
+  }
+
+  public listParseErrors(version: string, limit: number, pathPrefix?: string): ParseErrorFile[] {
+    const index = this.requireIndex(version);
+    return this.withDatabase(index, database => database.listParseErrors(limit, pathPrefix)
+      .map(file => ({ version: index.label, ...file })));
   }
 
   public async getMethodSource(version: string, owner: string, method: string, lookup: MethodLookup = {}): Promise<SearchHit> {

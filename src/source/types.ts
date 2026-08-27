@@ -99,3 +99,9 @@ export type MethodLookup = {
   parameterCount?: number;
   overloadIndex?: number;
 };
+
+export type ParseErrorFile = {
+  version: string;
+  path: string;
+  parseErrorCount: number;
+};

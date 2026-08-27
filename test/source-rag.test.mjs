@@ -27,6 +27,7 @@ test("v3 index and MCP expose structured range, search, and comparison results",
     const builder = new IndexBuilder(catalog);
     await builder.indexSources("fixture-v1", path.resolve("test/fixtures"), { sourceType: "custom" });
     await builder.indexSources("fixture-v2", path.resolve("test/fixtures-v2"), { sourceType: "custom" });
+    await builder.indexSources("fixture-errors", path.resolve("test/fixtures-errors"), { sourceType: "custom" });
     const { SearchEngine } = await import("../dist/source/SearchEngine.js");
     const comparison = await new SearchEngine(catalog).compareMethodSource("fixture-v1", "fixture-v2", "demo.DurableItem", "damageAndBreak");
     assert.equal(comparison.changed, true);
@@ -40,6 +41,18 @@ test("v3 index and MCP expose structured range, search, and comparison results",
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const tools = await client.listTools();
     assert.ok(tools.tools.some(tool => tool.name === "search_code" && tool.outputSchema));
+    assert.ok(tools.tools.some(tool => tool.name === "list_parse_errors" && tool.outputSchema));
+    const parseErrors = await client.callTool({
+      name: "list_parse_errors",
+      arguments: { version: "fixture-errors", limit: 10 }
+    });
+    assert.equal(parseErrors.structuredContent.result[0].path, "demo/Broken.java");
+    assert.ok(parseErrors.structuredContent.result[0].parseErrorCount > 0);
+    const filteredParseErrors = await client.callTool({
+      name: "list_parse_errors",
+      arguments: { version: "fixture-errors", limit: 10, pathPrefix: "other/" }
+    });
+    assert.deepEqual(filteredParseErrors.structuredContent.result, []);
     const result = await client.callTool({
       name: "get_source_range",
       arguments: { version: "fixture-v1", fileOrClass: "demo.DurableItem", startLine: 4, endLine: 9, contextLines: 0 }
