@@ -56,6 +56,10 @@ export class SourceCatalog {
     this.createSchema();
   }
 
+  public get rootDir(): string {
+    return this.dataDir;
+  }
+
   public async createBuild(): Promise<IndexBuildPaths> {
     const generationId = randomUUID();
     const stagingDir = path.join(this.dataDir, "staging", generationId);

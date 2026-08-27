@@ -2,6 +2,8 @@
 
 Minecraft decompiled source MCP server for local source search, symbol lookup, reference lookup, and local embedding RAG.
 
+Node.js 24 or newer is required.
+
 ## Copyright Boundary
 
 This project does **not** ship Minecraft source code, bytecode, assets, jars, mod jars, or decompiled output.
@@ -46,9 +48,10 @@ The bundled Node runtime supports DirectML without an additional Python environm
 ```powershell
 $env:SOURCE_RAG_EMBEDDING_DEVICE = "dml"
 $env:SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
+$env:SOURCE_RAG_EMBEDDING_BATCH_SIZE = "10"
 ```
 
-The 1024-token limit prevents unusually large decompiler methods from exhausting GPU memory. DirectML sessions use sequential execution and two ONNX CPU threads.
+The 1024-token limit prevents unusually large decompiler methods from exhausting GPU memory. The default batch size is 10 and can be lowered if GPU memory is limited. DirectML sessions use sequential execution and two ONNX CPU threads.
 
 ## First Index
 
@@ -125,18 +128,20 @@ You can also provide `indexAs` directly.
 
 * exact symbol lookup
 * raw text matches
-* BM25 over identifier-aware tokens
+* SQLite FTS5 BM25 over identifier-aware tokens
 * cosine similarity over local `jinaai/jina-embeddings-v2-base-code` vectors
 
-Source is chunked at class and method boundaries. Methods longer than 160 lines are split with a 20-line overlap. Dense vectors are normalized, quantized to int8, and stored as base64 to keep the index manageable.
+Tree-sitter extracts classes, methods, constructors, and fields without treating local variables as fields. Source is chunked at declaration and statement boundaries. Long methods are split between top-level statements with a small overlap. Dense vectors are normalized, quantized to int8, and stored as contiguous rows in a binary vector file.
+
+Each index generation uses a managed source snapshot, a SQLite symbol/FTS database, and an optional vector file. Display labels never become filesystem paths directly. A completed generation replaces the active catalog entry atomically, so a failed rebuild leaves the previous generation available.
 
 The embedding model is downloaded from Hugging Face on the first new index and cached under `<SOURCE_RAG_DATA>/models`. The default model file is about 642 MB. Inference is local and does not use an external embedding API.
 
-Set `SOURCE_RAG_EMBEDDINGS=disabled` to build and search a BM25-only index. Override the model with `SOURCE_RAG_EMBEDDING_MODEL`; indexes searched together should use the same model. `SOURCE_RAG_EMBEDDING_DEVICE` selects the Transformers.js execution device and defaults to `auto`. On Windows, use `dml` for DirectML acceleration.
+Set `SOURCE_RAG_EMBEDDINGS=disabled` to build and search an FTS-only index. Override the model with `SOURCE_RAG_EMBEDDING_MODEL`; indexes searched together must use the same model. `SOURCE_RAG_EMBEDDING_DEVICE` selects the Transformers.js execution device and defaults to `auto`. On Windows, use `dml` for DirectML acceleration.
 
 `SOURCE_RAG_EMBEDDING_MAX_TOKENS` defaults to 1024 so unusually large decompiler methods cannot exhaust GPU memory. Long methods are already split into overlapping source chunks before this final tokenizer limit is applied.
 
-Indexes created before version 0.2 must be rebuilt with `index_sources`, `add_minecraft_version`, or `add_mod_jar` to receive semantic chunks, BM25 postings, and dense code embeddings.
+The v3 catalog does not load the previous JSON index format. Rebuild indexes with `index_sources`, `add_minecraft_version`, or `add_mod_jar`. Existing v2 data is not deleted automatically.
 
 ## Tools
 
@@ -193,6 +198,7 @@ args = [
 SOURCE_RAG_DATA = "C:\\dev\\minecraft\\source-rag-mcp\\.source-rag"
 SOURCE_RAG_EMBEDDING_DEVICE = "dml"
 SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
+SOURCE_RAG_EMBEDDING_BATCH_SIZE = "10"
 ```
 
 If `node` is not on `PATH`, use an absolute Node executable path for `command` only:
@@ -208,6 +214,7 @@ args = [
 SOURCE_RAG_DATA = "C:\\dev\\minecraft\\source-rag-mcp\\.source-rag"
 SOURCE_RAG_EMBEDDING_DEVICE = "dml"
 SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
+SOURCE_RAG_EMBEDDING_BATCH_SIZE = "10"
 ```
 
 Example:
@@ -223,18 +230,18 @@ args = [
 SOURCE_RAG_DATA = "C:\\dev\\minecraft\\source-rag-mcp\\.source-rag"
 SOURCE_RAG_EMBEDDING_DEVICE = "dml"
 SOURCE_RAG_EMBEDDING_MAX_TOKENS = "1024"
+SOURCE_RAG_EMBEDDING_BATCH_SIZE = "10"
 ```
 
 ## Indexed Sources
 
-Indexed source trees are stored under:
+Every active catalog entry points to an immutable UUID generation stored under:
 
 ```text
-<SOURCE_RAG_DATA>/sources/<version>
+<SOURCE_RAG_DATA>/indexes/<generation-uuid>/
+  index.sqlite
+  vectors.i8
+  sources/
 ```
 
-For example:
-
-```text
-C:\dev\minecraft\source-rag-mcp\.source-rag\sources\26.2
-```
+The human-readable index label is stored in `catalog.sqlite` and is not used as a directory name.

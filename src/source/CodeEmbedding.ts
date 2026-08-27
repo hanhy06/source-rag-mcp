@@ -30,11 +30,11 @@ export class CodeEmbedding {
     return this.device;
   }
 
-  public async embed(texts: string[]): Promise<string[]> {
+  public async embed(texts: string[]): Promise<Int8Array[]> {
     if (!this.enabled || texts.length === 0) return [];
     const extractor = await this.getExtractor();
-    const result: string[] = [];
-    const batchSize = Math.max(1, Number(process.env.SOURCE_RAG_EMBEDDING_BATCH_SIZE ?? 8));
+    const result: Int8Array[] = [];
+    const batchSize = Math.max(1, Number(process.env.SOURCE_RAG_EMBEDDING_BATCH_SIZE ?? 10));
     const progressEvery = Math.max(1, Number(process.env.SOURCE_RAG_EMBEDDING_PROGRESS_EVERY ?? 100));
     const totalBatches = Math.ceil(texts.length / batchSize);
     for (let start = 0; start < texts.length; start += batchSize) {
@@ -43,14 +43,14 @@ export class CodeEmbedding {
       const vectors = tensor.tolist() as number[][];
       for (const vector of vectors) result.push(quantizeVector(vector));
       const completedBatches = Math.floor(start / batchSize) + 1;
-      if (completedBatches % progressEvery === 0 || completedBatches === totalBatches) {
+      if (texts.length > batchSize && (completedBatches % progressEvery === 0 || completedBatches === totalBatches)) {
         process.stderr.write(`[source-rag] embedded ${Math.min(start + batch.length, texts.length)}/${texts.length} chunks (${completedBatches}/${totalBatches} batches)\n`);
       }
     }
     return result;
   }
 
-  public async embedQuery(text: string): Promise<string | undefined> {
+  public async embedQuery(text: string): Promise<Int8Array | undefined> {
     const embeddings = await this.embed([text]);
     return embeddings[0];
   }
@@ -78,23 +78,21 @@ export class CodeEmbedding {
   }
 }
 
-export function quantizeVector(vector: number[]): string {
+export function quantizeVector(vector: number[]): Int8Array {
   const quantized = new Int8Array(vector.length);
   for (let i = 0; i < vector.length; i++) quantized[i] = Math.max(-127, Math.min(127, Math.round(vector[i] * 127)));
-  return Buffer.from(quantized.buffer).toString("base64");
+  return quantized;
 }
 
-export function quantizedCosine(left: string, right: string): number {
-  const leftBytes = new Int8Array(Buffer.from(left, "base64"));
-  const rightBytes = new Int8Array(Buffer.from(right, "base64"));
-  if (leftBytes.length !== rightBytes.length || leftBytes.length === 0) return 0;
+export function quantizedCosine(left: Int8Array, right: Int8Array): number {
+  if (left.length !== right.length || left.length === 0) return 0;
   let dot = 0;
   let leftLength = 0;
   let rightLength = 0;
-  for (let i = 0; i < leftBytes.length; i++) {
-    dot += leftBytes[i] * rightBytes[i];
-    leftLength += leftBytes[i] * leftBytes[i];
-    rightLength += rightBytes[i] * rightBytes[i];
+  for (let i = 0; i < left.length; i++) {
+    dot += left[i] * right[i];
+    leftLength += left[i] * left[i];
+    rightLength += right[i] * right[i];
   }
   return leftLength === 0 || rightLength === 0 ? 0 : dot / Math.sqrt(leftLength * rightLength);
 }

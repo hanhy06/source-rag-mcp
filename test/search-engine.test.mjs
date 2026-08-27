@@ -14,7 +14,7 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
   await cp(path.resolve("test/fixtures"), sourceDir, { recursive: true });
   const catalog = new SourceCatalog(path.join(root, "data"));
   try {
-    await new IndexBuilder(catalog).indexSources("fixture", sourceDir, { sourceType: "custom" });
+    await new IndexBuilder(catalog, undefined, { enabled: false }).indexSources("fixture", sourceDir, { sourceType: "custom" });
     const search = new SearchEngine(catalog);
 
     const fields = await search.searchSymbol("fixture", "false", 10, { kinds: ["field"] });
@@ -32,6 +32,7 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
     const references = await search.findReferences("fixture", "breakItem", 10, { excludeDeclaration: true });
     assert.equal(references.length, 1);
     assert.match(references[0].preview, /this\.breakItem/);
+    await search.close();
   } finally {
     catalog.close();
     await rm(root, { recursive: true, force: true });

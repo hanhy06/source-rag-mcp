@@ -36,7 +36,10 @@ export function createServer(): McpServer {
     name: "source-rag-mcp",
     version: "0.2.0"
   });
-  server.server.onclose = () => catalog.close();
+  server.server.onclose = () => {
+    void search.close();
+    catalog.close();
+  };
 
   server.registerTool("list_versions", {
     description: "List indexed Minecraft, mod, and custom source indexes with source metadata.",

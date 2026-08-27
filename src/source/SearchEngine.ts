@@ -1,17 +1,23 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { CodeEmbedding } from "./CodeEmbedding.js";
 import { unifiedDiff } from "./Diff.js";
 import { IndexDatabase, type StoredChunk, type StoredFile, type StoredSymbol } from "./IndexDatabase.js";
 import { tokenizeForSearch } from "./SearchTokenizer.js";
 import { SourceCatalog, type CatalogIndex } from "./SourceCatalog.js";
 import type { MethodComparison, MethodLookup, SearchFilter, SearchHit, SearchMode, SourceFile, SourceRange, SourceSymbol, SourceType } from "./types.js";
+import { VectorSearch } from "./VectorSearch.js";
 
 export class SearchEngine {
   private readonly catalog: SourceCatalog;
+  private readonly embedding: CodeEmbedding;
+  private readonly vectorSearch: VectorSearch;
 
-  public constructor(catalog: SourceCatalog) {
+  public constructor(catalog: SourceCatalog, embedding = new CodeEmbedding(catalog.rootDir), vectorSearch = new VectorSearch()) {
     this.catalog = catalog;
+    this.embedding = embedding;
+    this.vectorSearch = vectorSearch;
   }
 
   public async searchSymbol(version: string | undefined, query: string, limit: number, filter: SearchFilter = {}): Promise<SourceSymbol[]> {
@@ -48,7 +54,12 @@ export class SearchEngine {
   }
 
   public async ragSearch(version: string | undefined, query: string, limit: number, filter: SearchFilter = {}): Promise<SearchHit[]> {
-    return await this.searchText(version, query, limit, filter);
+    const candidateLimit = Math.min(100, Math.max(limit * 3, 20));
+    const [lexical, semantic] = await Promise.all([
+      this.searchText(version, query, candidateLimit, filter),
+      this.semanticSearch(version, query, candidateLimit, filter)
+    ]);
+    return this.reciprocalRankFusion([lexical, semantic], [1, 1.1], limit);
   }
 
   public async searchCode(
@@ -59,14 +70,20 @@ export class SearchEngine {
     filter: SearchFilter = {}
   ): Promise<SearchHit[]> {
     if (mode === "symbol") return this.symbolHits(await this.searchSymbol(version, query, limit, filter));
-    if (mode === "text" || mode === "hybrid") return await this.searchText(version, query, limit, filter);
+    if (mode === "text") return await this.searchText(version, query, limit, filter);
+    if (mode === "hybrid") return await this.ragSearch(version, query, limit, filter);
 
     const candidateLimit = Math.min(100, Math.max(limit * 3, 20));
-    const [symbols, lexical] = await Promise.all([
+    const [symbols, lexical, semantic] = await Promise.all([
       this.searchSymbol(version, query, candidateLimit, filter).then(hits => this.symbolHits(hits)),
-      this.searchText(version, query, candidateLimit, filter)
+      this.searchText(version, query, candidateLimit, filter),
+      this.semanticSearch(version, query, candidateLimit, filter)
     ]);
-    return this.reciprocalRankFusion([symbols, lexical], [1.2, 1], limit);
+    return this.reciprocalRankFusion([symbols, lexical, semantic], [1.2, 1, 1.1], limit);
+  }
+
+  public async close(): Promise<void> {
+    await this.vectorSearch.close();
   }
 
   public async getSource(version: string, fileOrClass: string): Promise<SourceFile> {
@@ -180,6 +197,40 @@ export class SearchEngine {
       candidates.push(...this.withDatabase(index, database => database.searchChunks(ftsQuery, limit, filter)).map(chunk => ({ index, chunk })));
     }
     return candidates.sort((left, right) => left.chunk.rank - right.chunk.rank).slice(0, limit);
+  }
+
+  private async semanticSearch(version: string | undefined, query: string, limit: number, filter: SearchFilter): Promise<SearchHit[]> {
+    if (!this.embedding.enabled) return [];
+    const indexes = this.resolveIndexes(version, filter.sourceTypes).filter(index => index.embeddingModel !== undefined);
+    if (indexes.length === 0) return [];
+    const incompatible = indexes.find(index => index.embeddingModel !== this.embedding.modelName);
+    if (incompatible) throw new Error(`Index ${incompatible.label} uses embedding model ${incompatible.embeddingModel}; rebuild it with ${this.embedding.modelName}.`);
+    const queryEmbedding = await this.embedding.embedQuery(query);
+    if (!queryEmbedding) return [];
+
+    const candidates: Array<{ index: CatalogIndex; chunk: StoredChunk; score: number }> = [];
+    for (const index of indexes) {
+      const vectorHits = await this.vectorSearch.search(index.vectorPath, queryEmbedding, limit);
+      const chunks = this.withDatabase(index, database => database.chunksByVectorRows(vectorHits.map(hit => hit.row)));
+      for (const hit of vectorHits) {
+        const chunk = chunks.get(hit.row);
+        if (!chunk) continue;
+        if (filter.pathPrefix && !chunk.path.startsWith(filter.pathPrefix.replaceAll("\\", "/"))) continue;
+        if (filter.owner) {
+          const owner = filter.owner.replaceAll("$", ".");
+          const candidateOwner = chunk.owner?.replaceAll("$", ".") ?? "";
+          if (candidateOwner !== owner && !candidateOwner.startsWith(`${owner}.`)) continue;
+        }
+        candidates.push({ index, chunk, score: hit.score });
+      }
+    }
+    candidates.sort((left, right) => right.score - left.score);
+    const hits: SearchHit[] = [];
+    for (const candidate of candidates.slice(0, limit)) {
+      const source = await this.readSource(candidate.index, this.requireFile(candidate.index, candidate.chunk.path));
+      hits.push(this.chunkHit(candidate.index, candidate.chunk, query, filter.contextLines ?? 0, candidate.score, source));
+    }
+    return hits;
   }
 
   private chunkHit(index: CatalogIndex, chunk: StoredChunk, query: string, contextLines: number, score: number, source: SourceFile): SearchHit {

@@ -26,7 +26,7 @@ public class Example {
 
   const catalog = new SourceCatalog(dataDir);
   try {
-    const index = await new IndexBuilder(catalog).indexSources("fixture", sourceDir, { sourceType: "custom" });
+    const index = await new IndexBuilder(catalog, undefined, { enabled: false }).indexSources("fixture", sourceDir, { sourceType: "custom" });
     assert.equal(index.fileCount, 1);
     assert.equal(index.parseErrorCount, 0);
     assert.equal(await readFile(path.join(index.sourceDir, "demo", "Example.java"), "utf8"), original);

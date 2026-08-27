@@ -290,6 +290,31 @@ export class IndexDatabase {
     return new Set(rows.map(row => Number(row.start_line)));
   }
 
+  public chunksByVectorRows(vectorRows: number[]): Map<number, StoredChunk> {
+    if (vectorRows.length === 0) return new Map();
+    const rows = this.database.prepare(`
+      SELECT c.*, f.path, 0.0 AS lexical_rank
+      FROM chunks c JOIN files f ON f.id = c.file_id
+      WHERE c.vector_row IN (${vectorRows.map(() => "?").join(", ")})
+    `).all(...vectorRows) as Array<Record<string, string | number | null>>;
+    return new Map(rows.map(row => {
+      const chunk: StoredChunk = {
+        id: Number(row.id),
+        fileId: Number(row.file_id),
+        path: String(row.path),
+        kind: String(row.kind) as StoredChunk["kind"],
+        owner: optionalString(row.owner),
+        name: optionalString(row.name),
+        signature: optionalString(row.signature),
+        startLine: Number(row.start_line),
+        endLine: Number(row.end_line),
+        rank: 0,
+        vectorRow: Number(row.vector_row)
+      };
+      return [chunk.vectorRow as number, chunk];
+    }));
+  }
+
   public summary(): IndexSummary {
     const counts = this.database.prepare(`
       SELECT
