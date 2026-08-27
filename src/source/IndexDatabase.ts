@@ -30,6 +30,42 @@ export type IndexSummary = {
   parseErrorCount: number;
 };
 
+export type StoredFile = {
+  id: number;
+  path: string;
+  packageName: string | null;
+  primaryTypeName: string | null;
+  fullName: string | null;
+  lineCount: number;
+};
+
+export type StoredSymbol = {
+  id: number;
+  fileId: number;
+  path: string;
+  kind: JavaDeclaration["kind"];
+  name: string;
+  owner: string | null;
+  signature: string;
+  startLine: number;
+  endLine: number;
+  parameterTypes?: string[];
+};
+
+export type StoredChunk = {
+  id: number;
+  fileId: number;
+  path: string;
+  kind: IndexChunkInput["kind"];
+  owner: string | null;
+  name: string | null;
+  signature: string | null;
+  startLine: number;
+  endLine: number;
+  rank: number;
+  vectorRow: number | null;
+};
+
 export class IndexDatabase {
   private readonly database: DatabaseSync;
   private readonly insertFileStatement: StatementSync;
@@ -140,6 +176,120 @@ export class IndexDatabase {
     `).run(key, JSON.stringify(value));
   }
 
+  public findFile(fileOrClass: string): StoredFile | undefined {
+    const normalizedPath = fileOrClass.replaceAll("\\", "/");
+    const normalizedOwner = fileOrClass.replaceAll("$", ".");
+    const row = this.database.prepare(`
+      SELECT id, path, package_name, primary_type_name, full_name, line_count
+      FROM files
+      WHERE path = ? OR full_name = ? OR primary_type_name = ? OR ? LIKE full_name || '.%'
+      ORDER BY CASE WHEN path = ? THEN 0 WHEN full_name = ? THEN 1 WHEN primary_type_name = ? THEN 2 ELSE 3 END
+      LIMIT 1
+    `).get(normalizedPath, normalizedOwner, fileOrClass, normalizedOwner, normalizedPath, normalizedOwner, fileOrClass) as Record<string, string | number | null> | undefined;
+    return row ? this.storedFile(row) : undefined;
+  }
+
+  public fileCandidates(): string[] {
+    const rows = this.database.prepare("SELECT path, full_name, primary_type_name FROM files ORDER BY path").all() as Array<Record<string, string | null>>;
+    return rows.flatMap(row => [row.full_name, row.primary_type_name, row.path]).filter((value): value is string => value !== null);
+  }
+
+  public searchSymbols(
+    query: string,
+    limit: number,
+    filter: { kinds?: JavaDeclaration["kind"][]; pathPrefix?: string; owner?: string } = {}
+  ): StoredSymbol[] {
+    const normalized = query.toLowerCase();
+    const contains = `%${escapeLike(normalized)}%`;
+    const prefix = `${escapeLike(normalized)}%`;
+    const conditions = ["(s.normalized_name LIKE ? ESCAPE '\\' OR lower(COALESCE(s.owner, '')) LIKE ? ESCAPE '\\' OR lower(s.signature) LIKE ? ESCAPE '\\')"];
+    const parameters: Array<string | number> = [contains, contains, contains];
+    if (filter.kinds && filter.kinds.length > 0) {
+      conditions.push(`s.kind IN (${filter.kinds.map(() => "?").join(", ")})`);
+      parameters.push(...filter.kinds);
+    }
+    if (filter.pathPrefix) {
+      conditions.push("f.path LIKE ? ESCAPE '\\'");
+      parameters.push(`${escapeLike(filter.pathPrefix.replaceAll("\\", "/"))}%`);
+    }
+    if (filter.owner) {
+      conditions.push("(replace(s.owner, '$', '.') = ? OR replace(s.owner, '$', '.') LIKE ?)");
+      const owner = filter.owner.replaceAll("$", ".");
+      parameters.push(owner, `${escapeLike(owner)}.%`);
+    }
+
+    parameters.push(query, normalized, prefix, limit);
+    const rows = this.database.prepare(`
+      SELECT s.*, f.path
+      FROM symbols s JOIN files f ON f.id = s.file_id
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY
+        CASE WHEN s.name = ? THEN 0 WHEN s.normalized_name = ? THEN 1 WHEN s.normalized_name LIKE ? ESCAPE '\\' THEN 2 ELSE 3 END,
+        CASE s.kind WHEN 'class' THEN 0 WHEN 'interface' THEN 1 WHEN 'record' THEN 2 WHEN 'enum' THEN 3 WHEN 'method' THEN 4 ELSE 5 END,
+        length(s.name), f.path, s.start_line
+      LIMIT ?
+    `).all(...parameters) as Array<Record<string, string | number | null>>;
+    return rows.map(row => this.storedSymbol(row));
+  }
+
+  public findMethods(owner: string, name: string): StoredSymbol[] {
+    const normalizedOwner = owner.replaceAll("$", ".");
+    const rows = this.database.prepare(`
+      SELECT s.*, f.path
+      FROM symbols s JOIN files f ON f.id = s.file_id
+      WHERE s.kind IN ('method', 'constructor') AND s.name = ? AND replace(s.owner, '$', '.') = ?
+      ORDER BY s.start_line
+    `).all(name, normalizedOwner) as Array<Record<string, string | number | null>>;
+    return rows.map(row => this.storedSymbol(row));
+  }
+
+  public searchChunks(
+    ftsQuery: string,
+    limit: number,
+    filter: { pathPrefix?: string; owner?: string } = {}
+  ): StoredChunk[] {
+    const conditions = ["chunk_fts MATCH ?"];
+    const parameters: Array<string | number> = [ftsQuery];
+    if (filter.pathPrefix) {
+      conditions.push("f.path LIKE ? ESCAPE '\\'");
+      parameters.push(`${escapeLike(filter.pathPrefix.replaceAll("\\", "/"))}%`);
+    }
+    if (filter.owner) {
+      const owner = filter.owner.replaceAll("$", ".");
+      conditions.push("(replace(c.owner, '$', '.') = ? OR replace(c.owner, '$', '.') LIKE ?)");
+      parameters.push(owner, `${escapeLike(owner)}.%`);
+    }
+    parameters.push(limit);
+
+    const rows = this.database.prepare(`
+      SELECT c.*, f.path, bm25(chunk_fts, 4.0, 6.0, 3.0, 1.0) AS lexical_rank
+      FROM chunk_fts
+      JOIN chunks c ON c.id = chunk_fts.rowid
+      JOIN files f ON f.id = c.file_id
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY lexical_rank, c.id
+      LIMIT ?
+    `).all(...parameters) as Array<Record<string, string | number | null>>;
+    return rows.map(row => ({
+      id: Number(row.id),
+      fileId: Number(row.file_id),
+      path: String(row.path),
+      kind: String(row.kind) as StoredChunk["kind"],
+      owner: optionalString(row.owner),
+      name: optionalString(row.name),
+      signature: optionalString(row.signature),
+      startLine: Number(row.start_line),
+      endLine: Number(row.end_line),
+      rank: Number(row.lexical_rank),
+      vectorRow: row.vector_row === null ? null : Number(row.vector_row)
+    }));
+  }
+
+  public declarationLines(fileId: number, name: string): Set<number> {
+    const rows = this.database.prepare("SELECT start_line FROM symbols WHERE file_id = ? AND name = ?").all(fileId, name) as Array<Record<string, number>>;
+    return new Set(rows.map(row => Number(row.start_line)));
+  }
+
   public summary(): IndexSummary {
     const counts = this.database.prepare(`
       SELECT
@@ -240,6 +390,33 @@ export class IndexDatabase {
       );
     `);
   }
+
+  private storedFile(row: Record<string, string | number | null>): StoredFile {
+    return {
+      id: Number(row.id),
+      path: String(row.path),
+      packageName: optionalString(row.package_name),
+      primaryTypeName: optionalString(row.primary_type_name),
+      fullName: optionalString(row.full_name),
+      lineCount: Number(row.line_count)
+    };
+  }
+
+  private storedSymbol(row: Record<string, string | number | null>): StoredSymbol {
+    const rawParameterTypes = optionalString(row.parameter_types);
+    return {
+      id: Number(row.id),
+      fileId: Number(row.file_id),
+      path: String(row.path),
+      kind: String(row.kind) as JavaDeclaration["kind"],
+      name: String(row.name),
+      owner: optionalString(row.owner),
+      signature: String(row.signature),
+      startLine: Number(row.start_line),
+      endLine: Number(row.end_line),
+      parameterTypes: rawParameterTypes ? JSON.parse(rawParameterTypes) as string[] : undefined
+    };
+  }
 }
 
 function tokenizeIdentifiers(text: string): string {
@@ -247,4 +424,12 @@ function tokenizeIdentifiers(text: string): string {
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase();
+}
+
+function optionalString(value: string | number | null): string | null {
+  return value === null ? null : String(value);
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, character => `\\${character}`);
 }

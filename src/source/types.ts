@@ -50,33 +50,12 @@ export type SourceFile = {
 
 export type SourceSymbol = {
   version: string;
-  kind: "class" | "method" | "field";
+  kind: "class" | "interface" | "enum" | "record" | "annotation" | "method" | "constructor" | "field" | "enum_constant";
   name: string;
   owner: string | null;
   path: string;
   line: number;
   signature: string;
-};
-
-export type SourceChunk = {
-  id?: string;
-  version: string;
-  path: string;
-  owner: string | null;
-  kind?: SourceChunkKind;
-  name?: string;
-  signature?: string;
-  startLine: number;
-  endLine: number;
-  text: string;
-  embedding?: string | Array<[number, number]>;
-};
-
-export type Bm25Index = {
-  documentCount: number;
-  averageDocumentLength: number;
-  lengths: number[];
-  postings: Record<string, Array<[number, number]>>;
 };
 
 export type SearchHit = {
@@ -103,7 +82,7 @@ export type MethodComparison = {
   diff: string;
 };
 
-export type SourceChunkKind = "file" | "class" | "method";
+export type SourceChunkKind = "file" | "class" | "method" | "constructor" | "initializer";
 
 export type SourceRange = {
   version: string;
@@ -119,12 +98,4 @@ export type MethodLookup = {
   parameterTypes?: string[];
   parameterCount?: number;
   overloadIndex?: number;
-};
-
-export type VersionIndex = {
-  meta: SourceVersion;
-  files: SourceFile[];
-  symbols: SourceSymbol[];
-  chunks: SourceChunk[];
-  bm25?: Bm25Index;
 };

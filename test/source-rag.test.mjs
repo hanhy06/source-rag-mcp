@@ -7,54 +7,31 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { buildBm25Index, searchBm25 } from "../dist/source/Bm25.js";
 import { quantizeVector, quantizedCosine } from "../dist/source/CodeEmbedding.js";
-import { scanJavaStructure } from "../dist/source/JavaStructure.js";
-import { SourceIndex } from "../dist/source/SourceIndex.js";
+import { IndexBuilder } from "../dist/source/IndexBuilder.js";
+import { SourceCatalog } from "../dist/source/SourceCatalog.js";
 
-test("Java structure scanner ignores non-code braces and finds multiline methods", () => {
-  const source = `package demo;
-public class Example {
-  String brace = "}";
-  public <T extends Number>
-  T compute(T value) {
-    return value;
-  }
-}`;
-  const blocks = scanJavaStructure(source, "demo");
-  assert.deepEqual(
-    blocks.map(({ kind, name, startLine, endLine }) => ({ kind, name, startLine, endLine })),
-    [
-      { kind: "class", name: "Example", startLine: 2, endLine: 8 },
-      { kind: "method", name: "compute", startLine: 4, endLine: 7 }
-    ]
-  );
-});
-
-test("BM25 and quantized vectors preserve relevant ranking primitives", () => {
-  const chunks = [
-    { version: "test", path: "Item.java", owner: "demo.Item", startLine: 1, endLine: 1, name: "damageAndBreak", text: "decrease durability and break item" },
-    { version: "test", path: "Piglin.java", owner: "demo.Piglin", startLine: 1, endLine: 1, name: "pose", text: "melee attack arm pose" }
-  ];
-  const scores = searchBm25(buildBm25Index(chunks), "where item durability decreases until it breaks");
-  assert.ok((scores.get(0) ?? 0) > (scores.get(1) ?? 0));
+test("quantized vectors preserve cosine similarity", () => {
   const vector = quantizeVector([0.1, 0.2, 0.3]);
   assert.equal(quantizedCosine(vector, vector), 1);
 });
 
-test("SourceIndex and MCP expose structured range, search, and comparison results", async () => {
+test("v3 index and MCP expose structured range, search, and comparison results", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "source-rag-mcp-"));
   const previousData = process.env.SOURCE_RAG_DATA;
   const previousEmbeddings = process.env.SOURCE_RAG_EMBEDDINGS;
   process.env.SOURCE_RAG_DATA = dataDir;
   process.env.SOURCE_RAG_EMBEDDINGS = "disabled";
   try {
-    const index = new SourceIndex(dataDir);
-    await index.indexSources("fixture-v1", path.resolve("test/fixtures"), { sourceType: "custom" });
-    await index.indexSources("fixture-v2", path.resolve("test/fixtures-v2"), { sourceType: "custom" });
-    const comparison = await index.compareMethodSource("fixture-v1", "fixture-v2", "demo.DurableItem", "damageAndBreak");
+    const catalog = new SourceCatalog(dataDir);
+    const builder = new IndexBuilder(catalog);
+    await builder.indexSources("fixture-v1", path.resolve("test/fixtures"), { sourceType: "custom" });
+    await builder.indexSources("fixture-v2", path.resolve("test/fixtures-v2"), { sourceType: "custom" });
+    const { SearchEngine } = await import("../dist/source/SearchEngine.js");
+    const comparison = await new SearchEngine(catalog).compareMethodSource("fixture-v1", "fixture-v2", "demo.DurableItem", "damageAndBreak");
     assert.equal(comparison.changed, true);
     assert.match(comparison.diff, /Math\.max/);
+    catalog.close();
 
     const { createServer } = await import("../dist/server.js");
     const server = createServer();
