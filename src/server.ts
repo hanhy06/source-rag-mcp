@@ -46,10 +46,7 @@ export function createServer(): McpServer {
     inputSchema: {},
     outputSchema: resultSchema
   }, async () => {
-    const indexes = catalog.listIndexes();
-    const activeLabels = new Set(indexes.map(index => index.label));
-    const legacy = (await catalog.listLegacyIndexes()).filter(index => !activeLabels.has(index.label));
-    return structured([...indexes, ...legacy]);
+    return structured(catalog.listIndexes());
   });
 
   server.registerTool("index_sources", {

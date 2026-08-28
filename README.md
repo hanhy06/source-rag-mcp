@@ -135,15 +135,13 @@ You can also provide `indexAs` directly.
 Tree-sitter extracts classes, methods, constructors, and fields without treating local variables as fields. Source is chunked at declaration and statement boundaries. Long methods are split between top-level statements with a small overlap. Dense vectors are normalized, quantized to int8, and stored as contiguous rows in a binary vector file.
 
 Each index generation uses a managed source snapshot, a SQLite symbol/FTS database, and an optional vector file. Display labels never become filesystem paths directly. A completed generation replaces the active catalog entry atomically, so a failed rebuild leaves the previous generation available.
-Builds for the same label use a filesystem lock. Abandoned staging, work, and inactive generation directories older than 24 hours are removed during later builds; active generations and legacy v2 data are never removed by this maintenance pass.
+Builds for the same label use a filesystem lock. Abandoned staging, work, and inactive generation directories older than 24 hours are removed during later builds; active generations are never removed by this maintenance pass.
 
 The embedding model is downloaded from Hugging Face on the first new index and cached under `<SOURCE_RAG_DATA>/models`. The default model file is about 642 MB. Inference is local and does not use an external embedding API.
 
 Set `SOURCE_RAG_EMBEDDINGS=disabled` to build and search an FTS-only index. Override the model with `SOURCE_RAG_EMBEDDING_MODEL`; indexes searched together must use the same model. `SOURCE_RAG_EMBEDDING_DEVICE` selects the Transformers.js execution device and defaults to `auto`. On Windows, use `dml` for DirectML acceleration.
 
 `SOURCE_RAG_EMBEDDING_MAX_TOKENS` defaults to 1024 so unusually large decompiler methods cannot exhaust GPU memory. Long methods are already split into overlapping source chunks before this final tokenizer limit is applied.
-
-The v3 catalog does not load the previous JSON index format. Rebuild indexes with `index_sources`, `add_minecraft_version`, or `add_mod_jar`. Existing v2 data is not deleted automatically.
 
 ## Tools
 

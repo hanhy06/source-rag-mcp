@@ -1,31 +1,4 @@
-export type SourceVersion = {
-  version: string;
-  sourceDir: string;
-  indexedAt: string;
-  fileCount: number;
-  symbolCount: number;
-  indexFormatVersion?: number;
-  sourceType?: SourceType;
-  minecraftVersion?: string;
-  modId?: string;
-  modVersion?: string;
-  mappingNamespace?: string;
-  side?: "client" | "server";
-  embeddingModel?: string;
-  embeddingDimensions?: number;
-  embeddingDevice?: string;
-};
-
 export type SourceType = "minecraft" | "mod" | "custom";
-
-export type SourceMetadata = {
-  sourceType?: SourceType;
-  minecraftVersion?: string;
-  modId?: string;
-  modVersion?: string;
-  mappingNamespace?: string;
-  side?: "client" | "server";
-};
 
 export type SearchFilter = {
   sourceTypes?: SourceType[];

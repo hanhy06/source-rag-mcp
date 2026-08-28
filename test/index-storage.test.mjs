@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -73,20 +73,6 @@ test("v3 storage keeps labels out of paths and activates an immutable generation
     assert.equal(path.dirname(active.databasePath), catalog.generationDir(active.generationId));
     assert.equal(active.databasePath.startsWith(path.join(dataDir, "indexes")), true);
     assert.equal(catalog.listIndexes().length, 1);
-
-    const legacyDir = path.join(dataDir, "legacy-index");
-    await mkdir(legacyDir, { recursive: true });
-    await writeFile(path.join(legacyDir, "meta.json"), JSON.stringify({
-      version: "legacy",
-      sourceDir: "C:/legacy/sources",
-      indexFormatVersion: 2
-    }), "utf8");
-    assert.deepEqual(await catalog.listLegacyIndexes(), [{
-      label: "legacy",
-      indexFormatVersion: 2,
-      sourceDir: "C:/legacy/sources",
-      rebuildRequired: true
-    }]);
 
     const abandoned = path.join(dataDir, "staging", "00000000-0000-4000-8000-000000000000");
     await mkdir(abandoned, { recursive: true });

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -39,14 +39,6 @@ export type CatalogIndex = CatalogIndexInput & {
   sourceDir: string;
   databasePath: string;
   vectorPath: string;
-};
-
-export type LegacyIndex = {
-  label: string;
-  indexFormatVersion: number;
-  sourceDir: string;
-  indexedAt?: string;
-  rebuildRequired: true;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -122,29 +114,6 @@ export class SourceCatalog {
     await this.removeAbandonedDirectories(path.join(this.dataDir, "staging"));
     await this.removeAbandonedDirectories(path.join(this.dataDir, "work"));
     await this.removeAbandonedDirectories(path.join(this.dataDir, "indexes"), activeGenerations);
-  }
-
-  public async listLegacyIndexes(): Promise<LegacyIndex[]> {
-    const entries = await readdir(this.dataDir, { withFileTypes: true });
-    const legacy: LegacyIndex[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      try {
-        const meta = JSON.parse(await readFile(path.join(this.dataDir, entry.name, "meta.json"), "utf8")) as Record<string, unknown>;
-        const format = Number(meta.indexFormatVersion ?? 1);
-        if (format >= INDEX_FORMAT_VERSION || typeof meta.version !== "string" || typeof meta.sourceDir !== "string") continue;
-        legacy.push({
-          label: meta.version,
-          indexFormatVersion: format,
-          sourceDir: meta.sourceDir,
-          ...(typeof meta.indexedAt === "string" ? { indexedAt: meta.indexedAt } : {}),
-          rebuildRequired: true
-        });
-      } catch {
-        continue;
-      }
-    }
-    return legacy.sort((left, right) => left.label.localeCompare(right.label));
   }
 
   public async activateBuild(build: IndexBuildPaths, input: CatalogIndexInput): Promise<CatalogIndex | undefined> {
