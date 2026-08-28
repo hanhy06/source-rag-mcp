@@ -9,6 +9,9 @@ import { SourceCatalog, type CatalogIndex } from "./SourceCatalog.js";
 import type { MethodComparison, MethodLookup, ParseErrorFile, SearchFilter, SearchHit, SearchMode, SourceFile, SourceRange, SourceSymbol, SourceType } from "./types.js";
 import { VectorSearch } from "./VectorSearch.js";
 
+const CHUNK_START_LINE = Symbol("chunkStartLine");
+type ChunkSearchHit = SearchHit & { [CHUNK_START_LINE]?: number };
+
 export class SearchEngine {
   private readonly catalog: SourceCatalog;
   private readonly embedding: CodeEmbedding;
@@ -80,7 +83,7 @@ export class SearchEngine {
       this.semanticSearch(version, query, candidateLimit, filter)
     ]);
     const fused = this.reciprocalRankFusion([symbols, lexical, semantic], [1.2, 1, 1.1], candidateLimit);
-    return this.rerankSearchHits(query, fused, limit);
+    return await this.rerankSearchHits(query, fused, limit);
   }
 
   public async close(): Promise<void> {
@@ -261,7 +264,7 @@ export class SearchEngine {
         lineIndex = candidate;
       }
     }
-    return {
+    const hit: ChunkSearchHit = {
       version: index.label,
       path: chunk.path,
       line: lineIndex + 1,
@@ -271,8 +274,10 @@ export class SearchEngine {
       name: chunk.name ?? undefined,
       signature: chunk.signature ?? undefined,
       score,
+      [CHUNK_START_LINE]: chunk.startLine,
       ...this.contextPreview(lines, lineIndex, contextLines)
     };
+    return hit;
   }
 
   private resolveIndexes(version: string | undefined, sourceTypes?: SourceType[]): CatalogIndex[] {
@@ -354,9 +359,17 @@ export class SearchEngine {
       .map(entry => ({ ...entry.hit, score: Number((entry.score * 1000).toFixed(4)) }));
   }
 
-  private rerankSearchHits(query: string, hits: SearchHit[], limit: number): SearchHit[] {
+  private async rerankSearchHits(query: string, hits: SearchHit[], limit: number): Promise<SearchHit[]> {
     const queryTerms = [...new Set(tokenizeForSearch(query))];
-    return hits.map((hit, originalRank) => {
+    const bodyQueryTerms = new Set(queryTerms);
+    if (queryTerms.some(term => term === "register" || term === "attach" || term === "install")) bodyQueryTerms.add("add");
+    const queryIdentifiers = [...new Set((query.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? [])
+      .filter(identifier => /[a-z0-9][A-Z]/.test(identifier) || identifier.includes("_") || identifier.includes("$"))
+      .map(identifier => identifier.toLowerCase()))];
+    const normalizedQuery = query.trim().toLowerCase().replace(/\s+/g, " ");
+    const sourceCache = new Map<string, Promise<string>>();
+
+    const ranked = await Promise.all(hits.map(async (hit, originalRank) => {
       const metadata = `${hit.path} ${hit.owner ?? ""} ${hit.name ?? ""} ${hit.signature ?? ""}`;
       const metadataTerms = [...new Set(tokenizeForSearch(metadata))];
       const coverage = queryTerms.filter(queryTerm => metadataTerms.some(metadataTerm =>
@@ -365,9 +378,35 @@ export class SearchEngine {
       const simpleOwner = hit.owner?.replaceAll("$", ".").split(".").at(-1)?.toLowerCase();
       const exactIdentity = queryTerms.some(term => term === simpleOwner || term === hit.name?.toLowerCase());
       const structuralBonus = hit.kind === "class" || hit.kind === "file" ? 0.5 : 0;
-      const score = (hit.score ?? 0) + coverage * 2 + (exactIdentity ? 3 : 0) + structuralBonus;
+
+      const index = this.requireIndex(hit.version);
+      const cacheKey = `${hit.version}:${hit.path}`;
+      let sourcePromise = sourceCache.get(cacheKey);
+      if (!sourcePromise) {
+        sourcePromise = this.readSnapshotText(index, hit.path);
+        sourceCache.set(cacheKey, sourcePromise);
+      }
+      const source = await sourcePromise;
+      const lines = source.split(/\r?\n/);
+      const chunkStartLine = (hit as ChunkSearchHit)[CHUNK_START_LINE] ?? hit.line ?? 1;
+      const body = lines.slice(Math.max(0, chunkStartLine - 1), Math.max(chunkStartLine, hit.endLine ?? hit.line ?? chunkStartLine)).join("\n");
+      const bodyTerms = [...new Set(tokenizeForSearch(body))];
+      const bodyCoverage = [...bodyQueryTerms].filter(queryTerm => bodyTerms.some(bodyTerm =>
+        queryTerm === bodyTerm || (queryTerm.length >= 4 && bodyTerm.startsWith(queryTerm))
+      )).length;
+      const identifierMatches = queryIdentifiers.filter(identifier => body.toLowerCase().includes(identifier)).length;
+      const identifierPairs = identifierMatches * (identifierMatches - 1) / 2;
+      const completeIdentifierBonus = queryIdentifiers.length >= 2 && identifierMatches === queryIdentifiers.length ? 10 : 0;
+      const cooccurrenceBonus = queryIdentifiers.length < 2 && bodyCoverage >= 3 ? bodyCoverage * (bodyCoverage - 1) * 0.75 : 0;
+      const callableBonus = bodyCoverage >= 3 && (hit.kind === "constructor" || hit.kind === "method" || hit.kind === "initializer") ? 2 : 0;
+      const normalizedBody = body.toLowerCase().replace(/\s+/g, " ");
+      const exactTextBonus = normalizedQuery.length >= 4 && normalizedBody.includes(normalizedQuery) ? 12 : 0;
+      const score = (hit.score ?? 0) + coverage * 2 + (exactIdentity ? 3 : 0) + structuralBonus
+        + bodyCoverage * 1.5 + cooccurrenceBonus + callableBonus + identifierMatches * 4 + identifierPairs * 2
+        + completeIdentifierBonus + exactTextBonus;
       return { hit: { ...hit, score: Number(score.toFixed(4)) }, originalRank };
-    }).sort((left, right) => (right.hit.score ?? 0) - (left.hit.score ?? 0) || left.originalRank - right.originalRank)
+    }));
+    return ranked.sort((left, right) => (right.hit.score ?? 0) - (left.hit.score ?? 0) || left.originalRank - right.originalRank)
       .slice(0, limit).map(entry => entry.hit);
   }
 

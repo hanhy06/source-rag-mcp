@@ -15,6 +15,16 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
   await writeFile(path.join(sourceDir, "demo", "OtherItem.java"), "package demo; class OtherItem { void damageAndBreak(String reason) {} }");
   await writeFile(path.join(sourceDir, "demo", "Noise.java"), "package demo; class Noise { String text = \"player held item rendered model player held item rendered model\"; }");
   await writeFile(path.join(sourceDir, "demo", "PlayerHeldItemRenderer.java"), "package demo; class PlayerHeldItemRenderer {}");
+  await writeFile(path.join(sourceDir, "demo", "ArmorLayer.java"), "package demo; class ArmorLayer {}");
+  await writeFile(path.join(sourceDir, "demo", "HeldItemLayer.java"), "package demo; class HeldItemLayer {}");
+  await writeFile(path.join(sourceDir, "demo", "PlayerRenderer.java"), `package demo;
+class PlayerRenderer {
+  PlayerRenderer() {
+    addLayer(new ArmorLayer());
+    addLayer(new HeldItemLayer());
+  }
+  void addLayer(Object layer) {}
+}`);
   const catalog = new SourceCatalog(path.join(root, "data"));
   try {
     await new IndexBuilder(catalog, undefined, { enabled: false }).indexSources("fixture", sourceDir, { sourceType: "custom" });
@@ -31,6 +41,13 @@ test("SearchEngine queries v3 symbols, lexical chunks, methods, and references",
 
     const reranked = await search.searchCode("fixture", "Where is a held item rendered on the player model?", 5, "auto");
     assert.ok(reranked.slice(0, 3).some(hit => hit.owner === "demo.PlayerHeldItemRenderer"));
+
+    const relationship = await search.searchCode("fixture", "PlayerRenderer addLayer ArmorLayer HeldItemLayer", 5, "auto");
+    assert.equal(relationship[0].kind, "constructor");
+    assert.equal(relationship[0].owner, "demo.PlayerRenderer");
+
+    const naturalRelationship = await search.searchCode("fixture", "Where does the player renderer register armor and held item layers?", 5, "auto");
+    assert.ok(naturalRelationship.some(hit => hit.kind === "constructor" && hit.owner === "demo.PlayerRenderer"));
 
     const method = await search.getMethodSource("fixture", "demo.DurableItem", "damageAndBreak", { parameterTypes: ["int"] });
     assert.match(method.preview, /this\.durability -= amount/);
