@@ -34,7 +34,7 @@ export class CodeEmbedding {
     if (!this.enabled || texts.length === 0) return [];
     const extractor = await this.getExtractor();
     const result: Int8Array[] = [];
-    const batchSize = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_BATCH_SIZE", 12, 1);
+    const batchSize = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_BATCH_SIZE", 15, 1);
     const progressEvery = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_PROGRESS_EVERY", 100, 1);
     const totalBatches = Math.ceil(texts.length / batchSize);
     for (let start = 0; start < texts.length; start += batchSize) {
@@ -61,7 +61,7 @@ export class CodeEmbedding {
         dtype: "fp32",
         device: this.device,
         session_options: {
-          intraOpNumThreads: 3,
+          intraOpNumThreads: 4,
           interOpNumThreads: 1,
           executionMode: "sequential",
           enableMemPattern: this.device !== "dml"
