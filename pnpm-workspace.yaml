@@ -5,3 +5,5 @@ allowBuilds:
   sharp: true
   tree-sitter: true
   tree-sitter-java: true
+minimumReleaseAgeExclude:
+  - '@huggingface/transformers@4.3.1'

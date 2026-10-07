@@ -118,7 +118,7 @@ export class IndexBuilder {
   }
 
   private async flush(database: IndexDatabase, pending: PendingFile[], vectorWriter: VectorWriter | undefined): Promise<void> {
-    const embeddedChunks: Array<{ chunkId: number; text: string }> = [];
+    const embeddedChunks: Array<{ chunkId: number; title: string; text: string }> = [];
     database.transaction(() => {
       for (const entry of pending) {
         const fileId = database.insertFile(entry.file);
@@ -135,14 +135,14 @@ export class IndexBuilder {
             endLine: chunk.endLine,
             searchText
           });
-          if (vectorWriter) embeddedChunks.push({ chunkId, text: searchText });
+          if (vectorWriter) embeddedChunks.push({ chunkId, title: entry.file.path, text: searchText });
         }
       }
     });
     pending.length = 0;
     if (!vectorWriter || embeddedChunks.length === 0) return;
 
-    const vectors = await this.embedding.embed(embeddedChunks.map(chunk => chunk.text));
+    const vectors = await this.embedding.embedDocuments(embeddedChunks);
     if (vectors.length !== embeddedChunks.length) throw new Error(`Embedding count mismatch. Expected ${embeddedChunks.length}, received ${vectors.length}.`);
     const vectorRows = await vectorWriter.append(vectors);
     database.transaction(() => {

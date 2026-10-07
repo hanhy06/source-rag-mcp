@@ -1,64 +1,106 @@
 import path from "node:path";
 
-import { pipeline, type DeviceType } from "@huggingface/transformers";
+import { AutoConfig, AutoModel, AutoTokenizer, type DeviceType } from "@huggingface/transformers";
 
-type FeatureExtractor = Awaited<ReturnType<typeof pipeline<"feature-extraction">>>;
+type EmbeddingRuntime = {
+  model: Awaited<ReturnType<typeof AutoModel.from_pretrained>>;
+  tokenizer: Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>;
+};
 
-export const DEFAULT_CODE_EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-code";
+export type CodeDocument = { title: string; text: string };
+
+export const DEFAULT_CODE_EMBEDDING_MODEL = "onnx-community/embeddinggemma-2-ONNX";
 
 export class CodeEmbedding {
   private readonly cacheDir: string;
   private readonly model: string;
   private readonly device: DeviceType;
-  private extractor?: Promise<FeatureExtractor>;
+  private readonly dtype: "q4" | "q8";
+  private readonly batchSize: number;
+  private readonly maxTokens: number;
+  private readonly progressEvery: number;
+  public readonly enabled: boolean;
+  public readonly dimensions = 256;
+  private runtime?: Promise<EmbeddingRuntime>;
 
   public constructor(dataDir: string, model = process.env.SOURCE_RAG_EMBEDDING_MODEL ?? DEFAULT_CODE_EMBEDDING_MODEL) {
     this.cacheDir = path.join(dataDir, "models");
     this.model = model;
-    this.device = (process.env.SOURCE_RAG_EMBEDDING_DEVICE ?? "auto") as DeviceType;
+    const device = (process.env.SOURCE_RAG_EMBEDDING_DEVICE ?? "auto") as DeviceType;
+    // DirectML cannot share an ONNX session with the WebGPU provider selected by auto/gpu.
+    this.device = process.platform === "win32" && (device === "auto" || device === "gpu") ? "dml" : device;
+    const dtype = process.env.SOURCE_RAG_EMBEDDING_DTYPE ?? "q4";
+    if (dtype !== "q4" && dtype !== "q8") throw new Error(`SOURCE_RAG_EMBEDDING_DTYPE must be q4 or q8; received ${dtype}.`);
+    this.dtype = dtype;
+    this.batchSize = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_BATCH_SIZE", 15, 1);
+    this.maxTokens = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_MAX_TOKENS", 1024, 128);
+    if (this.maxTokens > 8192) throw new Error("SOURCE_RAG_EMBEDDING_MAX_TOKENS must not exceed 8192.");
+    this.progressEvery = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_PROGRESS_EVERY", 100, 1);
+    this.enabled = process.env.SOURCE_RAG_EMBEDDINGS !== "disabled";
   }
 
   public get modelName(): string {
     return this.model;
   }
 
-  public get enabled(): boolean {
-    return process.env.SOURCE_RAG_EMBEDDINGS !== "disabled";
-  }
-
   public get deviceName(): string {
     return this.device;
   }
 
-  public async embed(texts: string[]): Promise<Int8Array[]> {
+  public async embedDocuments(documents: CodeDocument[]): Promise<Int8Array[]> {
+    return await this.embed(documents.map(document => `title: ${document.title || "none"} | text: ${document.text}`));
+  }
+
+  public async embedQuery(text: string): Promise<Int8Array | undefined> {
+    const embeddings = await this.embed([`task: code retrieval | query: ${text}`]);
+    return embeddings[0];
+  }
+
+  public async close(): Promise<void> {
+    if (this.runtime) await (await this.runtime).model.dispose();
+  }
+
+  private async embed(texts: string[]): Promise<Int8Array[]> {
     if (!this.enabled || texts.length === 0) return [];
-    const extractor = await this.getExtractor();
+    const { model, tokenizer } = await this.getRuntime();
     const result: Int8Array[] = [];
-    const batchSize = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_BATCH_SIZE", 15, 1);
-    const progressEvery = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_PROGRESS_EVERY", 100, 1);
-    const totalBatches = Math.ceil(texts.length / batchSize);
-    for (let start = 0; start < texts.length; start += batchSize) {
-      const batch = texts.slice(start, start + batchSize);
-      const tensor = await extractor(batch, { pooling: "mean", normalize: true });
+    const totalBatches = Math.ceil(texts.length / this.batchSize);
+    for (let start = 0; start < texts.length; start += this.batchSize) {
+      const batch = texts.slice(start, start + this.batchSize);
+      const inputs = await tokenizer(batch, { padding: true, truncation: true, max_length: this.maxTokens });
+      const { sentence_embedding: tensor } = await model(inputs);
+      if (!tensor || tensor.dims.length !== 2 || tensor.dims[0] !== batch.length || tensor.dims[1] !== 768) {
+        throw new Error("EmbeddingGemma 2 must return one 768-dimensional sentence embedding per input.");
+      }
       const vectors = tensor.tolist() as number[][];
-      for (const vector of vectors) result.push(quantizeVector(vector));
-      const completedBatches = Math.floor(start / batchSize) + 1;
-      if (texts.length > batchSize && (completedBatches % progressEvery === 0 || completedBatches === totalBatches)) {
+      for (const vector of vectors) {
+        if (vector.some(value => !Number.isFinite(value))) throw new Error("EmbeddingGemma 2 returned non-finite values.");
+        const truncated = vector.slice(0, this.dimensions);
+        const length = Math.sqrt(truncated.reduce((sum, value) => sum + value * value, 0));
+        if (length === 0) throw new Error("EmbeddingGemma 2 returned a zero-length vector.");
+        result.push(quantizeVector(truncated.map(value => value / length)));
+      }
+      const completedBatches = Math.floor(start / this.batchSize) + 1;
+      if (texts.length > this.batchSize && (completedBatches % this.progressEvery === 0 || completedBatches === totalBatches)) {
         process.stderr.write(`[source-rag] embedded ${Math.min(start + batch.length, texts.length)}/${texts.length} chunks (${completedBatches}/${totalBatches} batches)\n`);
       }
     }
     return result;
   }
 
-  public async embedQuery(text: string): Promise<Int8Array | undefined> {
-    const embeddings = await this.embed([text]);
-    return embeddings[0];
-  }
-
-  private async getExtractor(): Promise<FeatureExtractor> {
-    this.extractor ??= pipeline("feature-extraction", this.model, {
+  private async getRuntime(): Promise<EmbeddingRuntime> {
+    this.runtime ??= (async () => {
+      const options = { cache_dir: this.cacheDir };
+      const [config, tokenizer] = await Promise.all([
+        AutoConfig.from_pretrained(this.model, options),
+        AutoTokenizer.from_pretrained(this.model, options)
+      ]);
+      if (config.model_type !== "embedding_gemma2") throw new Error(`Expected an EmbeddingGemma 2 model; received ${config.model_type}.`);
+      Object.assign(config, { vision_config: null, audio_config: null });
+      const model = await AutoModel.from_pretrained(this.model, {
+        config,
         cache_dir: this.cacheDir,
-        dtype: "fp32",
+        dtype: this.dtype,
         device: this.device,
         session_options: {
           intraOpNumThreads: 4,
@@ -66,12 +108,10 @@ export class CodeEmbedding {
           executionMode: "sequential",
           enableMemPattern: this.device !== "dml"
         }
-      })
-      .then(extractor => {
-        extractor.tokenizer._tokenizerConfig.model_max_length = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_MAX_TOKENS", 1024, 128);
-        return extractor;
       });
-    return await this.extractor;
+      return { model, tokenizer };
+    })();
+    return await this.runtime;
   }
 }
 

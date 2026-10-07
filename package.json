@@ -18,6 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json && node dist/index.js",
     "test": "tsc -p tsconfig.json && node --test test/*.test.mjs",
+    "test:embedding": "tsc -p tsconfig.json && node test/embeddinggemma-smoke.mjs",
     "prepack": "pnpm run typecheck && pnpm run build",
     "prepublishOnly": "pnpm run typecheck && pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -34,7 +35,7 @@
   },
   "packageManager": "pnpm@11.7.0",
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
+    "@huggingface/transformers": "^4.3.1",
     "@modelcontextprotocol/sdk": "^1.19.2",
     "tree-sitter": "^0.21.1",
     "tree-sitter-java": "^0.23.5",

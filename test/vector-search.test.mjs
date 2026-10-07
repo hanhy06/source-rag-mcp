@@ -36,7 +36,8 @@ test("IndexBuilder and SearchEngine use stored dense vectors", async () => {
   const embedding = {
     enabled: true,
     modelName: "fixture-embedding",
-    embed: async texts => texts.map(text => text.includes("damageAndBreak") ? new Int8Array([127, 0, 0]) : new Int8Array([0, 0, 127])),
+    dimensions: 3,
+    embedDocuments: async documents => documents.map(document => document.text.includes("damageAndBreak") ? new Int8Array([127, 0, 0]) : new Int8Array([0, 0, 127])),
     embedQuery: async () => new Int8Array([127, 0, 0])
   };
   const search = new SearchEngine(catalog, embedding);
@@ -47,6 +48,13 @@ test("IndexBuilder and SearchEngine use stored dense vectors", async () => {
 
     const hits = await search.ragSearch("fixture", "wear the tool out", 3);
     assert.equal(hits[0].name, "damageAndBreak");
+
+    embedding.modelName = "other-model";
+    embedding.embedQuery = async () => { throw new Error("must reject before inference"); };
+    await assert.rejects(search.ragSearch("fixture", "query", 3), /rebuild it with other-model/);
+    embedding.modelName = "fixture-embedding";
+    embedding.dimensions = 256;
+    await assert.rejects(search.ragSearch("fixture", "query", 3), /rebuild it with 256/);
   } finally {
     await search.close();
     catalog.close();

@@ -223,6 +223,8 @@ export class SearchEngine {
     if (indexes.length === 0) return [];
     const incompatible = indexes.find(index => index.embeddingModel !== this.embedding.modelName);
     if (incompatible) throw new Error(`Index ${incompatible.label} uses embedding model ${incompatible.embeddingModel}; rebuild it with ${this.embedding.modelName}.`);
+    const wrongDimensions = indexes.find(index => index.embeddingDimensions !== this.embedding.dimensions);
+    if (wrongDimensions) throw new Error(`Index ${wrongDimensions.label} uses ${wrongDimensions.embeddingDimensions} embedding dimensions; rebuild it with ${this.embedding.dimensions}.`);
     const queryEmbedding = await this.embedding.embedQuery(query);
     if (!queryEmbedding) return [];
 

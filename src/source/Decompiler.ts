@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 
 const VINEFLOWER_VERSION = "1.12.0";
 const VINEFLOWER_URL = `https://repo.maven.apache.org/maven2/org/vineflower/vineflower/${VINEFLOWER_VERSION}/vineflower-${VINEFLOWER_VERSION}.jar`;
-const VINEFLOWER_SHA256 = "1dffcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d";
+const VINEFLOWER_SHA256 = "1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d";
 
 export type DecompileResult = {
   input: string;

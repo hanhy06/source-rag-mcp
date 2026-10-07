@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
+import { CodeEmbedding } from "./source/CodeEmbedding.js";
 import { Decompiler } from "./source/Decompiler.js";
 import { IndexBuilder } from "./source/IndexBuilder.js";
 import { ModJarIndexer } from "./source/ModJarIndexer.js";
@@ -27,8 +28,9 @@ const searchFilterSchema = {
 export function createServer(): McpServer {
   const dataDir = path.resolve(process.env.SOURCE_RAG_DATA ?? ".source-rag");
   const catalog = new SourceCatalog(dataDir);
-  const indexBuilder = new IndexBuilder(catalog);
-  const search = new SearchEngine(catalog);
+  const embedding = new CodeEmbedding(dataDir);
+  const indexBuilder = new IndexBuilder(catalog, undefined, embedding);
+  const search = new SearchEngine(catalog, embedding);
   const decompiler = new Decompiler(dataDir);
   const downloader = new VersionDownloader(dataDir);
   const modJarIndexer = new ModJarIndexer(indexBuilder, dataDir);
@@ -38,6 +40,7 @@ export function createServer(): McpServer {
   });
   server.server.onclose = () => {
     void search.close();
+    void embedding.close().catch(error => process.stderr.write(`[source-rag] failed to close embedding model: ${error instanceof Error ? error.message : String(error)}\n`));
     catalog.close();
   };
 
