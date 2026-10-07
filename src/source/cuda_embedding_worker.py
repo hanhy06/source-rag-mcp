@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import traceback
 
 import torch
 from sentence_transformers import SentenceTransformer
@@ -37,6 +38,7 @@ def main():
                     raise RuntimeError("EmbeddingGemma 2 returned non-finite values.")
                 response = {"id": request["id"], "vectors": vectors.float().cpu().tolist()}
         except Exception as error:
+            traceback.print_exc(file=sys.stderr)
             response = {"id": request["id"], "error": str(error)}
         print(json.dumps(response, allow_nan=False), flush=True)
 

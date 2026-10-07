@@ -94,7 +94,8 @@ export class CodeEmbedding {
         }
         vectors = tensor.tolist() as number[][];
       } else {
-        vectors = await this.embedCuda(batch);
+        // Rust tokenizers reject isolated UTF-16 surrogates found in decompiled Java literals.
+        vectors = await this.embedCuda(batch.map(text => Buffer.from(text, "utf8").toString("utf8")));
       }
       if (!Array.isArray(vectors) || vectors.length !== batch.length || vectors.some(vector => !Array.isArray(vector) || vector.length !== 768)) {
         throw new Error("EmbeddingGemma 2 must return one 768-dimensional sentence embedding per input.");
@@ -122,7 +123,7 @@ export class CodeEmbedding {
       const child = spawn(this.python, ["-u", script, "--model", this.model, "--cache-dir", this.cacheDir, "--max-tokens", String(this.maxTokens)], {
         stdio: ["pipe", "pipe", "inherit"],
         windowsHide: true,
-        env: { ...process.env, HF_HUB_DISABLE_PROGRESS_BARS: "1", TOKENIZERS_PARALLELISM: "false" }
+        env: { ...process.env, PYTHONUTF8: "1", HF_HUB_DISABLE_PROGRESS_BARS: "1", TOKENIZERS_PARALLELISM: "false" }
       });
       this.cudaProcess = child;
       createInterface({ input: child.stdout! }).on("line", line => {

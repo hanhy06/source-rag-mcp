@@ -13,8 +13,11 @@ test("CUDA selects the native model and rejects a missing Python environment", a
     assert.equal(embedding.modelName, CUDA_CODE_EMBEDDING_MODEL);
     assert.equal(embedding.deviceName, "cuda");
     await assert.rejects(embedding.embedQuery("query"), /SOURCE_RAG_PYTHON/);
-    embedding.embedCuda = async () => [Array.from({ length: 768 }, (_, index) => index === 0 ? 1 : 0)];
-    const vector = await embedding.embedQuery("query");
+    embedding.embedCuda = async texts => {
+      assert.deepEqual(texts, ["task: code retrieval | query: query \uFFFD \u{1F600}"]);
+      return [Array.from({ length: 768 }, (_, index) => index === 0 ? 1 : 0)];
+    };
+    const vector = await embedding.embedQuery("query \uD800 \u{1F600}");
     assert.equal(vector.length, 256);
     assert.equal(vector[0], 127);
     await embedding.close();
