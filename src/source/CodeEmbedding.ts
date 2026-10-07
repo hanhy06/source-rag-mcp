@@ -1,4 +1,8 @@
 import path from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 import { AutoConfig, AutoModel, AutoTokenizer, type DeviceType } from "@huggingface/transformers";
 
@@ -10,6 +14,7 @@ type EmbeddingRuntime = {
 export type CodeDocument = { title: string; text: string };
 
 export const DEFAULT_CODE_EMBEDDING_MODEL = "onnx-community/embeddinggemma-2-ONNX";
+export const CUDA_CODE_EMBEDDING_MODEL = "google/embeddinggemma-2";
 
 export class CodeEmbedding {
   private readonly cacheDir: string;
@@ -20,16 +25,22 @@ export class CodeEmbedding {
   private readonly maxTokens: number;
   private readonly progressEvery: number;
   private readonly intraOpThreads: number;
+  private readonly python: string | undefined;
   public readonly enabled: boolean;
   public readonly dimensions = 256;
   private runtime?: Promise<EmbeddingRuntime>;
+  private cudaProcess?: ChildProcess;
+  private cudaFailure?: Error;
+  private cudaRequestId = 0;
+  private readonly cudaRequests = new Map<number, { resolve: (vectors: number[][]) => void; reject: (error: Error) => void }>();
 
-  public constructor(dataDir: string, model = process.env.SOURCE_RAG_EMBEDDING_MODEL ?? DEFAULT_CODE_EMBEDDING_MODEL) {
+  public constructor(dataDir: string, model?: string) {
     this.cacheDir = path.join(dataDir, "models");
-    this.model = model;
     const device = (process.env.SOURCE_RAG_EMBEDDING_DEVICE ?? "auto") as DeviceType;
     // DirectML cannot share an ONNX session with the WebGPU provider selected by auto/gpu.
     this.device = process.platform === "win32" && (device === "auto" || device === "gpu") ? "dml" : device;
+    this.model = model ?? process.env.SOURCE_RAG_EMBEDDING_MODEL ?? (this.device === "cuda" ? CUDA_CODE_EMBEDDING_MODEL : DEFAULT_CODE_EMBEDDING_MODEL);
+    this.python = process.env.SOURCE_RAG_PYTHON;
     const dtype = process.env.SOURCE_RAG_EMBEDDING_DTYPE ?? "q4";
     if (dtype !== "q4" && dtype !== "q8") throw new Error(`SOURCE_RAG_EMBEDDING_DTYPE must be q4 or q8; received ${dtype}.`);
     this.dtype = dtype;
@@ -60,21 +71,34 @@ export class CodeEmbedding {
 
   public async close(): Promise<void> {
     if (this.runtime) await (await this.runtime).model.dispose();
+    if (this.cudaProcess?.pid && this.cudaProcess.exitCode === null && this.cudaProcess.signalCode === null) {
+      const closed = once(this.cudaProcess, "close");
+      this.cudaProcess.stdin!.end();
+      await closed;
+    }
   }
 
   private async embed(texts: string[]): Promise<Int8Array[]> {
     if (!this.enabled || texts.length === 0) return [];
-    const { model, tokenizer } = await this.getRuntime();
+    const runtime = this.device === "cuda" ? undefined : await this.getRuntime();
     const result: Int8Array[] = [];
     const totalBatches = Math.ceil(texts.length / this.batchSize);
     for (let start = 0; start < texts.length; start += this.batchSize) {
       const batch = texts.slice(start, start + this.batchSize);
-      const inputs = await tokenizer(batch, { padding: true, truncation: true, max_length: this.maxTokens });
-      const { sentence_embedding: tensor } = await model(inputs);
-      if (!tensor || tensor.dims.length !== 2 || tensor.dims[0] !== batch.length || tensor.dims[1] !== 768) {
+      let vectors: number[][];
+      if (runtime) {
+        const inputs = await runtime.tokenizer(batch, { padding: true, truncation: true, max_length: this.maxTokens });
+        const { sentence_embedding: tensor } = await runtime.model(inputs);
+        if (!tensor || tensor.dims.length !== 2 || tensor.dims[0] !== batch.length || tensor.dims[1] !== 768) {
+          throw new Error("EmbeddingGemma 2 must return one 768-dimensional sentence embedding per input.");
+        }
+        vectors = tensor.tolist() as number[][];
+      } else {
+        vectors = await this.embedCuda(batch);
+      }
+      if (!Array.isArray(vectors) || vectors.length !== batch.length || vectors.some(vector => !Array.isArray(vector) || vector.length !== 768)) {
         throw new Error("EmbeddingGemma 2 must return one 768-dimensional sentence embedding per input.");
       }
-      const vectors = tensor.tolist() as number[][];
       for (const vector of vectors) {
         if (vector.some(value => !Number.isFinite(value))) throw new Error("EmbeddingGemma 2 returned non-finite values.");
         const truncated = vector.slice(0, this.dimensions);
@@ -88,6 +112,49 @@ export class CodeEmbedding {
       }
     }
     return result;
+  }
+
+  private async embedCuda(texts: string[]): Promise<number[][]> {
+    if (this.cudaFailure) throw this.cudaFailure;
+    if (!this.python) throw new Error("SOURCE_RAG_PYTHON must point to a Python environment with CUDA PyTorch and sentence-transformers when using cuda.");
+    if (!this.cudaProcess) {
+      const script = fileURLToPath(new URL("../../src/source/cuda_embedding_worker.py", import.meta.url));
+      const child = spawn(this.python, ["-u", script, "--model", this.model, "--cache-dir", this.cacheDir, "--max-tokens", String(this.maxTokens)], {
+        stdio: ["pipe", "pipe", "inherit"],
+        windowsHide: true,
+        env: { ...process.env, HF_HUB_DISABLE_PROGRESS_BARS: "1", TOKENIZERS_PARALLELISM: "false" }
+      });
+      this.cudaProcess = child;
+      createInterface({ input: child.stdout! }).on("line", line => {
+        try {
+          const response = JSON.parse(line) as { id: number; vectors?: number[][]; error?: string };
+          const request = this.cudaRequests.get(response.id);
+          if (!request) throw new Error("CUDA embedding worker returned an unknown request id.");
+          this.cudaRequests.delete(response.id);
+          if (response.error) request.reject(new Error(response.error));
+          else request.resolve(response.vectors!);
+        } catch (error) {
+          this.failCuda(error instanceof Error ? error : new Error(String(error)));
+          child.kill();
+        }
+      });
+      child.on("error", error => this.failCuda(error));
+      child.on("close", (code, signal) => this.failCuda(new Error(`CUDA embedding worker exited (${signal ?? code}). See stderr for the cause.`)));
+      child.stdin!.on("error", error => this.failCuda(error));
+    }
+    const id = ++this.cudaRequestId;
+    return await new Promise<number[][]>((resolve, reject) => {
+      this.cudaRequests.set(id, { resolve, reject });
+      this.cudaProcess!.stdin!.write(`${JSON.stringify({ id, texts })}\n`, error => {
+        if (error) this.failCuda(error);
+      });
+    });
+  }
+
+  private failCuda(error: Error): void {
+    this.cudaFailure ??= error;
+    for (const request of this.cudaRequests.values()) request.reject(this.cudaFailure);
+    this.cudaRequests.clear();
   }
 
   private async getRuntime(): Promise<EmbeddingRuntime> {

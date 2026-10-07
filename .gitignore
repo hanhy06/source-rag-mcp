@@ -8,3 +8,4 @@ sources/
 *.jar
 *.class
 *.log
+__pycache__/

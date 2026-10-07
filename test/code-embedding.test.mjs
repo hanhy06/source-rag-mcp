@@ -1,7 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodeEmbedding, DEFAULT_CODE_EMBEDDING_MODEL } from "../dist/source/CodeEmbedding.js";
+import { CodeEmbedding, DEFAULT_CODE_EMBEDDING_MODEL, CUDA_CODE_EMBEDDING_MODEL } from "../dist/source/CodeEmbedding.js";
+
+test("CUDA selects the native model and rejects a missing Python environment", async () => {
+  const previousDevice = process.env.SOURCE_RAG_EMBEDDING_DEVICE;
+  const previousPython = process.env.SOURCE_RAG_PYTHON;
+  try {
+    process.env.SOURCE_RAG_EMBEDDING_DEVICE = "cuda";
+    delete process.env.SOURCE_RAG_PYTHON;
+    const embedding = new CodeEmbedding("unused");
+    assert.equal(embedding.modelName, CUDA_CODE_EMBEDDING_MODEL);
+    assert.equal(embedding.deviceName, "cuda");
+    await assert.rejects(embedding.embedQuery("query"), /SOURCE_RAG_PYTHON/);
+    embedding.embedCuda = async () => [Array.from({ length: 768 }, (_, index) => index === 0 ? 1 : 0)];
+    const vector = await embedding.embedQuery("query");
+    assert.equal(vector.length, 256);
+    assert.equal(vector[0], 127);
+    await embedding.close();
+  } finally {
+    if (previousDevice === undefined) delete process.env.SOURCE_RAG_EMBEDDING_DEVICE;
+    else process.env.SOURCE_RAG_EMBEDDING_DEVICE = previousDevice;
+    if (previousPython === undefined) delete process.env.SOURCE_RAG_PYTHON;
+    else process.env.SOURCE_RAG_PYTHON = previousPython;
+  }
+});
 
 test("code embeddings distinguish document titles and queries, then normalize before int8 storage", async () => {
   const embedding = new CodeEmbedding("unused");
