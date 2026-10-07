@@ -19,6 +19,7 @@ export class CodeEmbedding {
   private readonly batchSize: number;
   private readonly maxTokens: number;
   private readonly progressEvery: number;
+  private readonly intraOpThreads: number;
   public readonly enabled: boolean;
   public readonly dimensions = 256;
   private runtime?: Promise<EmbeddingRuntime>;
@@ -36,6 +37,7 @@ export class CodeEmbedding {
     this.maxTokens = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_MAX_TOKENS", 1024, 128);
     if (this.maxTokens > 8192) throw new Error("SOURCE_RAG_EMBEDDING_MAX_TOKENS must not exceed 8192.");
     this.progressEvery = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_PROGRESS_EVERY", 100, 1);
+    this.intraOpThreads = positiveIntegerEnvironment("SOURCE_RAG_EMBEDDING_THREADS", 4, 0);
     this.enabled = process.env.SOURCE_RAG_EMBEDDINGS !== "disabled";
   }
 
@@ -103,7 +105,7 @@ export class CodeEmbedding {
         dtype: this.dtype,
         device: this.device,
         session_options: {
-          intraOpNumThreads: 4,
+          intraOpNumThreads: this.intraOpThreads,
           interOpNumThreads: 1,
           executionMode: "sequential",
           enableMemPattern: this.device !== "dml"

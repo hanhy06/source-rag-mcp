@@ -52,6 +52,7 @@ test("invalid model output is rejected instead of storing corrupted vectors", as
 test("embedding settings are captured at construction and invalid precision is rejected", async () => {
   const previousEnabled = process.env.SOURCE_RAG_EMBEDDINGS;
   const previousDtype = process.env.SOURCE_RAG_EMBEDDING_DTYPE;
+  const previousThreads = process.env.SOURCE_RAG_EMBEDDING_THREADS;
   try {
     process.env.SOURCE_RAG_EMBEDDINGS = "disabled";
     const embedding = new CodeEmbedding("unused");
@@ -60,6 +61,11 @@ test("embedding settings are captured at construction and invalid precision is r
     assert.deepEqual(await embedding.embedDocuments([{ title: "Tool.java", text: "code" }]), []);
     assert.equal(await embedding.embedQuery("query"), undefined);
     assert.equal(embedding.runtime, undefined);
+    process.env.SOURCE_RAG_EMBEDDING_THREADS = "0";
+    assert.equal(new CodeEmbedding("unused").intraOpThreads, 0);
+    process.env.SOURCE_RAG_EMBEDDING_THREADS = "-1";
+    assert.throws(() => new CodeEmbedding("unused"), /SOURCE_RAG_EMBEDDING_THREADS/);
+    process.env.SOURCE_RAG_EMBEDDING_THREADS = "0";
     process.env.SOURCE_RAG_EMBEDDING_DTYPE = "fp16";
     assert.throws(() => new CodeEmbedding("unused"), /must be q4 or q8/);
   } finally {
@@ -67,5 +73,7 @@ test("embedding settings are captured at construction and invalid precision is r
     else process.env.SOURCE_RAG_EMBEDDINGS = previousEnabled;
     if (previousDtype === undefined) delete process.env.SOURCE_RAG_EMBEDDING_DTYPE;
     else process.env.SOURCE_RAG_EMBEDDING_DTYPE = previousDtype;
+    if (previousThreads === undefined) delete process.env.SOURCE_RAG_EMBEDDING_THREADS;
+    else process.env.SOURCE_RAG_EMBEDDING_THREADS = previousThreads;
   }
 });
